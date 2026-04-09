@@ -97,7 +97,7 @@ app = FastAPI(
 
     ## 技术栈
     - FastAPI + Python 3.10+
-    - 金策智算三省六部架构
+    - 睿之兮三省六部架构
     - 东方财富金融数据API
     - WebSocket实时推送
     """,

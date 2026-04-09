@@ -8,31 +8,94 @@ export default {
   theme: {
     extend: {
       colors: {
-        // 深色主题
-        'bg-primary': '#0a0b0d',
-        'bg-secondary': '#111318',
-        'bg-tertiary': '#1a1d24',
-        'bg-elevated': '#22262e',
-        'bg-hover': '#2a2f38',
-        // 强调色
-        'accent-primary': '#f59e0b',
-        'accent-secondary': '#06b6d4',
-        'accent-success': '#10b981',
-        'accent-danger': '#ef4444',
-        'accent-warning': '#f59e0b',
+        // 赛博朋克深色主题
+        'bg-void': '#020202',
+        'bg-deep': '#0a0a0f',
+        'bg-layer': '#12121a',
+        'bg-surface': '#1a1a25',
+        'bg-elevated': '#252532',
+
+        // 霓虹强调色
+        'neon-cyan': '#00f0ff',
+        'neon-magenta': '#ff00aa',
+        'neon-amber': '#ffb800',
+        'neon-purple': '#6b2cff',
+
+        // 信号色
+        'signal-buy': '#00f0ff',
+        'signal-sell': '#ff00aa',
+        'signal-hold': '#ffb800',
+        'signal-neutral': '#64748b',
+
         // 文字颜色
-        'text-primary': '#f8fafc',
-        'text-secondary': '#94a3b8',
-        'text-tertiary': '#64748b',
-        'text-muted': '#475569',
+        'text-primary': '#ffffff',
+        'text-secondary': 'rgba(255, 255, 255, 0.7)',
+        'text-tertiary': 'rgba(255, 255, 255, 0.4)',
+        'text-muted': 'rgba(255, 255, 255, 0.2)',
+
         // 边框
-        'border-primary': '#1e293b',
-        'border-secondary': '#334155',
+        'border-glow': 'rgba(0, 240, 255, 0.3)',
+        'border-subtle': 'rgba(255, 255, 255, 0.06)',
+        'border-medium': 'rgba(255, 255, 255, 0.12)',
       },
       fontFamily: {
-        'mono': ['JetBrains Mono', 'SF Mono', 'Fira Code', 'monospace'],
-        'serif': ['Noto Serif SC', 'Songti SC', 'serif'],
-        'sans': ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        'display': ['Space Grotesk', 'Noto Sans SC', 'sans-serif'],
+        'mono': ['JetBrains Mono', 'Noto Sans SC', 'monospace'],
+        'body': ['Inter', 'Noto Sans SC', 'sans-serif'],
+      },
+      animation: {
+        'pulse-glow': 'pulse-glow 2s ease-in-out infinite',
+        'scan': 'scan 4s linear infinite',
+        'fade-in-up': 'fade-in-up 0.6s ease forwards',
+        'border-flow': 'border-flow 3s linear infinite',
+        'text-flicker': 'text-flicker 3s linear infinite',
+        'ticker': 'ticker-scroll 20s linear infinite',
+        'blink': 'blink 2s ease-in-out infinite',
+      },
+      keyframes: {
+        'pulse-glow': {
+          '0%, 100%': { opacity: '1', filter: 'brightness(1)' },
+          '50%': { opacity: '0.7', filter: 'brightness(1.3)' },
+        },
+        'scan': {
+          '0%': { transform: 'translateY(-100%)' },
+          '100%': { transform: 'translateY(100vh)' },
+        },
+        'fade-in-up': {
+          'from': { opacity: '0', transform: 'translateY(20px)' },
+          'to': { opacity: '1', transform: 'translateY(0)' },
+        },
+        'border-flow': {
+          '0%': { backgroundPosition: '0% 50%' },
+          '100%': { backgroundPosition: '200% 50%' },
+        },
+        'text-flicker': {
+          '0%, 100%': { opacity: '1' },
+          '41%': { opacity: '1' },
+          '42%': { opacity: '0.4' },
+          '43%': { opacity: '1' },
+          '45%': { opacity: '0.4' },
+          '46%': { opacity: '1' },
+        },
+        'ticker-scroll': {
+          '0%': { transform: 'translateX(0)' },
+          '100%': { transform: 'translateX(-50%)' },
+        },
+        'blink': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.5' },
+        },
+      },
+      boxShadow: {
+        'glow-cyan': '0 0 20px rgba(0, 240, 255, 0.3)',
+        'glow-magenta': '0 0 20px rgba(255, 0, 170, 0.3)',
+        'glow-amber': '0 0 20px rgba(255, 184, 0, 0.3)',
+        'glow-purple': '0 0 20px rgba(107, 44, 255, 0.3)',
+      },
+      backgroundImage: {
+        'gradient-cyan': 'linear-gradient(135deg, #00f0ff, #6b2cff)',
+        'gradient-amber': 'linear-gradient(135deg, #ffb800, #ff00aa)',
+        'gradient-rainbow': 'linear-gradient(90deg, #00f0ff, #ff00aa, #ffb800, #00f0ff)',
       },
     },
   },

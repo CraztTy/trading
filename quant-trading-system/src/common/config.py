@@ -112,7 +112,7 @@ class DataSourceSettings(BaseSettings):
 
 
 class JinCeSettings(BaseSettings):
-    """金策智算引擎配置"""
+    """睿之兮引擎配置"""
 
     # 风控参数
     max_position_per_stock: float = Field(default=0.10, description="单票最大仓位(10%)")
@@ -219,7 +219,7 @@ class Settings(BaseSettings):
     # 数据源配置
     data_sources: DataSourceSettings = Field(default_factory=DataSourceSettings)
 
-    # 金策智算引擎配置
+    # 睿之兮引擎配置
     jince: JinCeSettings = Field(default_factory=JinCeSettings)
 
     # 金融技能配置

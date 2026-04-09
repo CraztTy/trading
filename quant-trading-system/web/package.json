@@ -1,7 +1,7 @@
 {
   "name": "quant-trading-dashboard",
   "version": "1.0.0",
-  "description": "金策智算 - L3量化交易系统Dashboard",
+  "description": "睿之兮 - L3量化交易系统Dashboard",
   "type": "module",
   "scripts": {
     "dev": "vite --port 9001",
