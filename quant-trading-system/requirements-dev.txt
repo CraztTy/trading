@@ -1,0 +1,45 @@
+# 开发环境依赖
+
+# 代码质量
+pylint==3.0.3
+bandit==1.7.6
+safety==2.3.5
+pip-audit==2.6.1
+
+# 测试增强
+pytest-xdist==3.5.0
+pytest-html==4.1.1
+pytest-benchmark==4.0.0
+hypothesis==6.92.2
+
+# 调试工具
+ipython==8.17.2
+ipdb==0.13.13
+debugpy==1.8.0
+
+# 文档生成
+mkdocs==1.5.3
+mkdocs-material==9.5.3
+mkdocstrings[python]==0.24.0
+
+# 依赖分析
+pipdeptree==2.13.1
+snakeviz==2.2.1
+
+# 安全扫描
+detect-secrets==1.4.0
+trufflehog==3.63.2
+
+# 性能分析
+py-spy==0.3.14
+memory-profiler==0.61.0
+pyinstrument==4.6.2
+
+# 数据库工具
+sqlfluff==2.3.5
+
+# HTTP客户端
+httpie==3.2.2
+
+# 代码覆盖率
+coverage==7.4.0

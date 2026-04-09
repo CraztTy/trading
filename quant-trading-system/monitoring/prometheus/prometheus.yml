@@ -1,0 +1,113 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: ${APP_ENV:-development}
+    cluster: quant-trading
+
+# 告警规则
+rule_files:
+  - "rules.yml"
+
+# 告警管理器配置
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# 抓取配置
+scrape_configs:
+  # Prometheus自身指标
+  - job_name: prometheus
+    static_configs:
+      - targets:
+        - localhost:9090
+
+  # 应用API指标
+  - job_name: quant-api
+    static_configs:
+      - targets:
+        - api:8001
+    metrics_path: /metrics
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(?::\d+)?'
+        replacement: '${1}'
+
+  # 节点指标（通过node-exporter）
+  - job_name: node
+    static_configs:
+      - targets:
+        - host.docker.internal:9100
+    scrape_interval: 30s
+
+  # Redis指标
+  - job_name: redis
+    static_configs:
+      - targets:
+        - redis:9121
+    scrape_interval: 30s
+
+  # MySQL指标
+  - job_name: mysql
+    static_configs:
+      - targets:
+        - mysql:9104
+    scrape_interval: 30s
+
+  # Kafka指标
+  - job_name: kafka
+    static_configs:
+      - targets:
+        - kafka:7071
+    scrape_interval: 30s
+
+  # RabbitMQ指标
+  - job_name: rabbitmq
+    static_configs:
+      - targets:
+        - rabbitmq:15692
+    scrape_interval: 30s
+
+  # ClickHouse指标
+  - job_name: clickhouse
+    static_configs:
+      - targets:
+        - clickhouse:9363
+    scrape_interval: 30s
+
+  # Blackbox exporter（HTTP探针）
+  - job_name: blackbox-http
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+        - http://api:8000/health
+        - http://web:3000
+        - http://grafana:3000
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+# 远程写入配置（可选）
+remote_write:
+  - url: ${REMOTE_WRITE_URL}
+    basic_auth:
+      username: ${REMOTE_WRITE_USERNAME}
+      password: ${REMOTE_WRITE_PASSWORD}
+
+# 远程读取配置（可选）
+remote_read:
+  - url: ${REMOTE_READ_URL}
+    basic_auth:
+      username: ${REMOTE_READ_USERNAME}
+      password: ${REMOTE_READ_PASSWORD}

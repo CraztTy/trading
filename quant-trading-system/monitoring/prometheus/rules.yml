@@ -1,0 +1,180 @@
+groups:
+  # ==================== 系统级别告警 ====================
+  - name: system
+    rules:
+      # 高CPU使用率
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "高CPU使用率 (instance {{ $labels.instance }})"
+          description: "CPU使用率超过80%超过5分钟，当前值: {{ $value }}%"
+
+      # 高内存使用率
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "高内存使用率 (instance {{ $labels.instance }})"
+          description: "内存使用率超过85%超过5分钟，当前值: {{ $value }}%"
+
+      # 磁盘空间不足
+      - alert: LowDiskSpace
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "磁盘空间不足 (instance {{ $labels.instance }})"
+          description: "根分区剩余空间不足10%，当前值: {{ $value }}%"
+
+  # ==================== 应用级别告警 ====================
+  - name: application
+    rules:
+      # API服务不可用
+      - alert: APIUnavailable
+        expr: up{job="quant-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API服务不可用 (instance {{ $labels.instance }})"
+          description: "API服务已经下线超过1分钟"
+
+      # API高错误率
+      - alert: APIHighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) * 100 > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API错误率过高 (instance {{ $labels.instance }})"
+          description: "5xx错误率超过5%超过2分钟，当前值: {{ $value }}%"
+
+      # API高延迟
+      - alert: APIHighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API延迟过高 (instance {{ $labels.instance }})"
+          description: "95%分位延迟超过1秒超过5分钟，当前值: {{ $value }}s"
+
+  # ==================== 数据库告警 ====================
+  - name: database
+    rules:
+      # MySQL连接数过高
+      - alert: MySQLHighConnections
+        expr: mysql_global_status_threads_connected / mysql_global_variables_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: mysql
+        annotations:
+          summary: "MySQL连接数过高 (instance {{ $labels.instance }})"
+          description: "MySQL连接数超过最大连接数的80%，当前值: {{ $value }}%"
+
+      # MySQL慢查询
+      - alert: MySQLSlowQueries
+        expr: rate(mysql_global_status_slow_queries[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: mysql
+        annotations:
+          summary: "MySQL慢查询过多 (instance {{ $labels.instance }})"
+          description: "慢查询率超过0.1每秒超过2分钟，当前值: {{ $value }}"
+
+      # Redis内存使用率过高
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "Redis内存使用率过高 (instance {{ $labels.instance }})"
+          description: "Redis内存使用率超过85%超过5分钟，当前值: {{ $value }}%"
+
+  # ==================== 业务指标告警 ====================
+  - name: business
+    rules:
+      # 数据同步延迟
+      - alert: DataSyncLatency
+        expr: quant_data_sync_latency_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+          component: data
+        annotations:
+          summary: "数据同步延迟过高"
+          description: "数据同步延迟超过5分钟，当前值: {{ $value }}秒"
+
+      # 策略执行失败
+      - alert: StrategyExecutionFailed
+        expr: rate(quant_strategy_execution_failed_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: strategy
+        annotations:
+          summary: "策略执行失败率过高"
+          description: "策略执行失败率超过10%超过2分钟，当前值: {{ $value }}"
+
+      # 订单执行超时
+      - alert: OrderExecutionTimeout
+        expr: rate(quant_order_execution_timeout_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: order
+        annotations:
+          summary: "订单执行超时率过高"
+          description: "订单执行超时率超过5%超过2分钟，当前值: {{ $value }}"
+
+      # 风控规则触发
+      - alert: RiskRuleTriggered
+        expr: quant_risk_rule_triggered_total > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: risk
+        annotations:
+          summary: "风控规则触发 (rule {{ $labels.rule_id }})"
+          description: "风控规则被触发，请立即检查"
+
+  # ==================== 外部依赖告警 ====================
+  - name: external
+    rules:
+      # 外部API不可用
+      - alert: ExternalAPIUnavailable
+        expr: probe_success{job="blackbox-http"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: external
+        annotations:
+          summary: "外部API不可用 (target {{ $labels.instance }})"
+          description: "外部API探针连续失败超过2分钟"
+
+      # 数据源连接失败
+      - alert: DataSourceConnectionFailed
+        expr: rate(quant_data_source_connection_failed_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          component: data
+        annotations:
+          summary: "数据源连接失败率过高 (source {{ $labels.source }})"
+          description: "数据源连接失败率超过10%超过2分钟，当前值: {{ $value }}"

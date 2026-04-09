@@ -1,0 +1,83 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+      queryTimeout: 60s
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: 2.45.0
+      cacheLevel: "High"
+      incrementalQueryOverlapWindow: "10m"
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+    secureJsonData: {}
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: "trace_id=(\\w+)"
+          name: TraceID
+          url: "$${__value.raw}"
+    secureJsonData: {}
+
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogs:
+        datasourceUid: "Loki"
+        filterByTraceID: true
+        filterBySpanID: false
+        tags: ["job", "instance", "pod", "namespace"]
+        mapTagNamesEnabled: false
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      serviceMap:
+        datasourceUid: "Prometheus"
+    secureJsonData: {}
+
+  - name: MySQL
+    type: mysql
+    access: proxy
+    url: mysql:3306
+    database: quant_trading
+    user: ${GF_DATABASE_USER}
+    secureJsonData:
+      password: ${GF_DATABASE_PASSWORD}
+    jsonData:
+      tlsAuth: false
+      tlsAuthWithCACert: false
+      timezone: "Asia/Shanghai"
+      tlsSkipVerify: true
+
+  - name: ClickHouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    url: http://clickhouse:8123
+    database: quant_data
+    user: ${CLICKHOUSE_USER:-default}
+    secureJsonData:
+      password: ${CLICKHOUSE_PASSWORD}
+    jsonData:
+      defaultDatabase: quant_data
+      port: 9000
+      username: ${CLICKHOUSE_USER:-default}
+      tlsSkipVerify: true
+      timeout: 30
+      queryTimeout: 60
