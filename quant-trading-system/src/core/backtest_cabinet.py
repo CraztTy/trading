@@ -14,14 +14,14 @@ import uuid
 import pandas as pd
 import numpy as np
 import asyncio
-from src.common.logger import get_logger
+from src.common.logger import TradingLogger
 from src.core.crown_prince import CrownPrince
 from src.core.zhongshu_sheng import ZhongshuSheng
 from src.core.menxia_sheng import MenxiaSheng
 from src.core.shangshu_sheng import ShangshuSheng
 from src.ministries.li_bu_rites import LiBuRites
 
-logger = get_logger(__name__)
+logger = TradingLogger(__name__)
 
 
 class BacktestCabinet:

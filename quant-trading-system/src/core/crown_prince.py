@@ -9,9 +9,9 @@
 """
 from typing import Optional
 import pandas as pd
-from src.common.logger import get_logger
+from src.common.logger import TradingLogger
 
-logger = get_logger(__name__)
+logger = TradingLogger(__name__)
 
 
 class CrownPrince:

@@ -11,13 +11,13 @@
 from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime
 import asyncio
-from src.common.logger import get_logger
+from src.common.logger import TradingLogger
 from src.core.crown_prince import CrownPrince
 from src.core.zhongshu_sheng import ZhongshuSheng
 from src.core.menxia_sheng import MenxiaSheng
 from src.core.shangshu_sheng import ShangshuSheng
 
-logger = get_logger(__name__)
+logger = TradingLogger(__name__)
 
 
 class LiveCabinet:

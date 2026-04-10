@@ -10,13 +10,13 @@
           <span class="header-badge">L3</span>
         </div>
         <div class="header-actions">
-          <button class="cyber-btn" @click="refreshData">
+          <button class="cyber-btn" @click="refreshData" :disabled="loading">
             <span class="btn-icon">↻</span>
-            <span class="btn-text">刷新数据</span>
+            <span class="btn-text">{{ loading ? '加载中...' : '刷新数据' }}</span>
           </button>
-          <button class="cyber-btn primary" @click="createStrategy">
+          <button class="cyber-btn primary" @click="showCreateOrder = true">
             <span class="btn-icon">+</span>
-            <span class="btn-text">新建策略</span>
+            <span class="btn-text">新建订单</span>
           </button>
         </div>
       </div>
@@ -25,7 +25,7 @@
     <!-- 核心指标卡片 -->
     <div class="metrics-section">
       <div
-        v-for="(metric, index) in metrics"
+        v-for="(metric, index) in computedMetrics"
         :key="metric.label"
         class="metric-card"
         :class="{ 'card-large': metric.large, 'positive': metric.positive, 'negative': metric.negative }"
@@ -53,7 +53,6 @@
           </div>
         </div>
 
-        <!-- 角落装饰 -->
         <div class="corner tl"></div>
         <div class="corner tr"></div>
         <div class="corner bl"></div>
@@ -68,73 +67,67 @@
         <div class="panel-header">
           <div class="header-left">
             <span class="panel-icon">◫</span>
-            <h3 class="panel-title">资产净值走势</h3>
+            <h3 class="panel-title">账户资产</h3>
             <span class="live-indicator">
               <span class="live-dot"></span>
               LIVE
             </span>
           </div>
-          <div class="time-range">
-            <button
-              v-for="range in timeRanges"
-              :key="range"
-              class="range-btn"
-              :class="{ active: selectedRange === range }"
-              @click="selectedRange = range"
-            >
-              {{ range }}
-            </button>
-          </div>
         </div>
         <div class="panel-content">
-          <EquityChart />
-        </div>
-        <div class="panel-footer">
-          <div class="stat-row">
-            <div class="stat-item">
-              <span class="stat-label">初始资金</span>
-              <span class="stat-value">¥1,000,000</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">当前净值</span>
-              <span class="stat-value positive">¥1,245,890</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">总收益率</span>
-              <span class="stat-value positive">+24.59%</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-label">阿尔法</span>
-              <span class="stat-value">0.184</span>
+          <div v-if="accountStore.currentAccount" class="account-stats">
+            <div class="stat-row">
+              <div class="stat-item">
+                <span class="stat-label">初始资金</span>
+                <span class="stat-value">¥{{ formatMoney(accountStore.currentAccount.initial_capital) }}</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">当前净值</span>
+                <span class="stat-value positive">¥{{ formatMoney(accountStore.totalEquity) }}</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">总收益率</span>
+                <span class="stat-value" :class="accountStore.totalReturn >= 0 ? 'positive' : 'negative'">
+                  {{ accountStore.totalReturn >= 0 ? '+' : '' }}{{ accountStore.totalReturn.toFixed(2) }}%
+                </span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">可用资金</span>
+                <span class="stat-value">¥{{ formatMoney(accountStore.currentAccount?.available || 0) }}</span>
+              </div>
             </div>
           </div>
+          <div v-else class="loading-text">加载中...</div>
         </div>
       </div>
 
-      <!-- 右侧：实时信号 -->
+      <!-- 右侧：实时订单 -->
       <div class="side-panel signals-section">
         <div class="panel-header">
           <span class="panel-icon">⚡</span>
-          <h3 class="panel-title">实时信号</h3>
-          <span class="panel-badge">{{ signals.length }}</span>
+          <h3 class="panel-title">活跃订单</h3>
+          <span class="panel-badge">{{ orderStore.activeOrderCount }}</span>
         </div>
         <div class="panel-content">
           <div
-            v-for="signal in signals"
-            :key="signal.id"
+            v-for="order in orderStore.activeOrders.slice(0, 5)"
+            :key="order.order_id"
             class="signal-item"
-            :class="signal.type"
+            :class="order.direction.toLowerCase()"
           >
-            <div class="signal-icon">{{ signal.type === 'buy' ? '▲' : signal.type === 'sell' ? '▼' : '◆' }}</div>
+            <div class="signal-icon">{{ order.direction === 'BUY' ? '▲' : '▼' }}</div>
             <div class="signal-info">
-              <span class="signal-symbol">{{ signal.symbol }}</span>
-              <span class="signal-strategy">{{ signal.strategy }}</span>
+              <span class="signal-symbol">{{ order.symbol }}</span>
+              <span class="signal-strategy">{{ order.status }}</span>
             </div>
             <div class="signal-price">
-              <span class="price-value">{{ signal.price }}</span>
-              <span class="price-time">{{ signal.time }}</span>
+              <span class="price-value">{{ order.price?.toFixed(2) || '市价' }}</span>
+              <span class="price-time">{{ order.filled_qty }}/{{ order.qty }}</span>
             </div>
-            <div class="signal-glow" :class="signal.type"></div>
+            <button class="cancel-btn" @click="cancelOrder(order.order_id)">撤</button>
+          </div>
+          <div v-if="orderStore.activeOrders.length === 0" class="empty-text">
+            暂无活跃订单
           </div>
         </div>
       </div>
@@ -142,11 +135,46 @@
 
     <!-- 底部：持仓与策略 -->
     <div class="dashboard-bottom">
-      <!-- 持仓列表 -->
+      <!-- 策略状态 -->
+      <div class="bottom-panel strategies-panel">
+        <div class="panel-header">
+          <span class="panel-icon">◈</span>
+          <h3 class="panel-title">策略状态</h3>
+        </div>
+        <div class="panel-content">
+          <div v-for="strategy in strategyStore.activeStrategies" :key="strategy.id" class="strategy-item">
+            <div class="strategy-info">
+              <span class="strategy-name">{{ strategy.name }}</span>
+              <span class="strategy-type">{{ strategy.type }}</span>
+            </div>
+            <div class="strategy-metrics">
+              <div class="metric">
+                <span class="metric-label">收益</span>
+                <span :class="strategy.performance && strategy.performance.return >= 0 ? 'positive' : 'negative'" class="metric-value">
+                  {{ strategy.performance?.return?.toFixed(1) || 0 }}%
+                </span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">夏普</span>
+                <span class="metric-value">{{ strategy.performance?.sharpe?.toFixed(2) || 0 }}</span>
+              </div>
+            </div>
+            <div class="strategy-status">
+              <span class="status-dot" :class="strategy.status"></span>
+              <span class="status-text">{{ strategy.status === 'active' ? '运行中' : '已暂停' }}</span>
+            </div>
+          </div>
+          <div v-if="strategyStore.activeStrategies.length === 0" class="empty-text">
+            暂无运行中策略
+          </div>
+        </div>
+      </div>
+
+      <!-- 最近订单 -->
       <div class="bottom-panel positions-panel">
         <div class="panel-header">
           <span class="panel-icon">◐</span>
-          <h3 class="panel-title">当前持仓</h3>
+          <h3 class="panel-title">最近订单</h3>
         </div>
         <div class="panel-content">
           <table class="cyber-table">
@@ -155,68 +183,76 @@
                 <th>标的</th>
                 <th>方向</th>
                 <th>数量</th>
-                <th>成本价</th>
-                <th>现价</th>
-                <th>盈亏</th>
-                <th>占比</th>
+                <th>价格</th>
+                <th>状态</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="pos in positions" :key="pos.symbol">
+              <tr v-for="order in orderStore.orders.slice(0, 5)" :key="order.order_id">
                 <td>
-                  <span class="cell-symbol">{{ pos.symbol }}</span>
-                  <span class="cell-name">{{ pos.name }}</span>
-                </td>
-                <td>
-                  <span class="cyber-tag" :class="pos.side">{{ pos.side === 'long' ? '多' : '空' }}</span>
-                </td>
-                <td class="data-value">{{ pos.quantity }}</td>
-                <td class="data-value">{{ pos.costPrice }}</td>
-                <td class="data-value">{{ pos.currentPrice }}</td>
-                <td :class="pos.pnl >= 0 ? 'positive' : 'negative'" class="data-value">
-                  {{ pos.pnl >= 0 ? '+' : '' }}{{ pos.pnl }}%
+                  <span class="cell-symbol">{{ order.symbol }}</span>
                 </td>
                 <td>
-                  <div class="cell-bar">
-                    <div class="cell-bar-fill" :style="{ width: `${pos.weight}%` }"></div>
-                    <span>{{ pos.weight }}%</span>
-                  </div>
+                  <span class="cyber-tag" :class="order.direction.toLowerCase()">
+                    {{ order.direction === 'BUY' ? '买' : '卖' }}
+                  </span>
                 </td>
+                <td class="data-value">{{ order.qty }}</td>
+                <td class="data-value">{{ order.price?.toFixed(2) || '-' }}</td>
+                <td>
+                  <span class="status-badge" :class="order.status.toLowerCase()">
+                    {{ getStatusText(order.status) }}
+                  </span>
+                </td>
+              </tr>
+              <tr v-if="orderStore.orders.length === 0">
+                <td colspan="5" class="empty-text">暂无订单</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
+    </div>
 
-      <!-- 策略状态 -->
-      <div class="bottom-panel strategies-panel">
-        <div class="panel-header">
-          <span class="panel-icon">◈</span>
-          <h3 class="panel-title">策略状态</h3>
+    <!-- 创建订单弹窗 -->
+    <div v-if="showCreateOrder" class="modal-overlay" @click="showCreateOrder = false">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <h3>新建订单</h3>
+          <button class="close-btn" @click="showCreateOrder = false">×</button>
         </div>
-        <div class="panel-content">
-          <div v-for="strategy in strategies" :key="strategy.id" class="strategy-item">
-            <div class="strategy-info">
-              <span class="strategy-name">{{ strategy.name }}</span>
-              <span class="strategy-type">{{ strategy.type }}</span>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>股票代码</label>
+            <input v-model="newOrder.symbol" type="text" placeholder="如: 600519.SH" class="cyber-input">
+          </div>
+          <div class="form-group">
+            <label>股票名称</label>
+            <input v-model="newOrder.symbol_name" type="text" placeholder="如: 贵州茅台" class="cyber-input">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>方向</label>
+              <select v-model="newOrder.direction" class="cyber-select">
+                <option value="BUY">买入</option>
+                <option value="SELL">卖出</option>
+              </select>
             </div>
-            <div class="strategy-metrics">
-              <div class="metric">
-                <span class="metric-label">收益</span>
-                <span :class="strategy.return >= 0 ? 'positive' : 'negative'" class="metric-value">
-                  {{ strategy.return }}%
-                </span>
-              </div>
-              <div class="metric">
-                <span class="metric-label">夏普</span>
-                <span class="metric-value">{{ strategy.sharpe }}</span>
-              </div>
-            </div>
-            <div class="strategy-status">
-              <span class="status-dot" :class="strategy.status"></span>
-              <span class="status-text">{{ strategy.status === 'active' ? '运行中' : '已暂停' }}</span>
+            <div class="form-group">
+              <label>数量</label>
+              <input v-model.number="newOrder.qty" type="number" placeholder="100" class="cyber-input" min="100" step="100">
             </div>
           </div>
+          <div class="form-group">
+            <label>价格 (限价单)</label>
+            <input v-model.number="newOrder.price" type="number" placeholder="留空为市价单" class="cyber-input" min="0" step="0.01">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="cyber-btn" @click="showCreateOrder = false">取消</button>
+          <button class="cyber-btn primary" @click="submitOrder" :disabled="orderStore.loading">
+            {{ orderStore.loading ? '提交中...' : '确认下单' }}
+          </button>
         </div>
       </div>
     </div>
@@ -224,790 +260,425 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import EquityChart from '@/components/charts/EquityChart.vue'
+import { ref, computed, onMounted } from 'vue'
+import { useAccountStore, useOrderStore, useStrategyStore } from '@/stores'
 
-const selectedRange = ref('1D')
-const timeRanges = ['1H', '1D', '1W', '1M', 'YTD', 'ALL']
+// Stores
+const accountStore = useAccountStore()
+const orderStore = useOrderStore()
+const strategyStore = useStrategyStore()
 
-const metrics = ref([
-  {
-    label: '总资产',
-    code: 'AUM-001',
-    value: '¥1,245,890.50',
-    trend: '+5.2%',
-    subtext: '较初始资金',
-    large: true,
-    positive: true,
-    fill: 85,
-  },
-  {
-    label: '今日盈亏',
-    code: 'P/L-DAY',
-    value: '+¥29,245.80',
-    trend: '+2.4%',
-    subtext: '日收益率',
-    positive: true,
-    fill: 70,
-  },
-  {
-    label: '累计收益',
-    code: 'RET-TOT',
-    value: '+¥245,890.50',
-    trend: '+24.6%',
-    subtext: '年化收益 18.2%',
-    positive: true,
-    fill: 60,
-  },
-  {
-    label: '夏普比率',
-    code: 'SHARPE',
-    value: '1.84',
-    trend: '+0.12',
-    subtext: '风险调整后收益',
-    fill: 75,
-  },
-  {
-    label: '最大回撤',
-    code: 'MDD',
-    value: '-8.50%',
-    trend: '-0.5%',
-    subtext: '历史最大',
-    negative: true,
-    fill: 25,
-  },
-  {
-    label: '胜率',
-    code: 'WIN-RATE',
-    value: '58.4%',
-    trend: '+1.2%',
-    subtext: '总交易 142笔',
-    fill: 58,
-  },
-])
+// State
+const loading = ref(false)
+const showCreateOrder = ref(false)
+const newOrder = ref({
+  symbol: '',
+  symbol_name: '',
+  direction: 'BUY' as 'BUY' | 'SELL',
+  qty: 100,
+  price: undefined as number | undefined
+})
 
-const signals = ref([
-  { id: 1, symbol: '600519', strategy: '双均线突破', type: 'buy', price: '1,688.00', time: '09:32:15' },
-  { id: 2, symbol: '000858', strategy: '趋势跟踪', type: 'sell', price: '158.50', time: '09:31:42' },
-  { id: 3, symbol: '300750', strategy: '动量策略', type: 'buy', price: '198.20', time: '09:30:08' },
-  { id: 4, symbol: '601888', strategy: '均值回归', type: 'hold', price: '68.35', time: '09:28:33' },
-])
+// 计算指标卡片数据
+const computedMetrics = computed(() => {
+  const account = accountStore.currentAccount
+  if (!account) return []
 
-const positions = ref([
-  { symbol: '600519', name: '贵州茅台', side: 'long', quantity: 100, costPrice: '1,650.00', currentPrice: '1,688.00', pnl: 2.3, weight: 35 },
-  { symbol: '300750', name: '宁德时代', side: 'long', quantity: 500, costPrice: '195.00', currentPrice: '198.20', pnl: 1.6, weight: 25 },
-  { symbol: '000333', name: '美的集团', side: 'long', quantity: 1000, costPrice: '58.50', currentPrice: '59.20', pnl: 1.2, weight: 20 },
-  { symbol: '601318', name: '中国平安', side: 'short', quantity: 800, costPrice: '45.00', currentPrice: '44.20', pnl: 1.8, weight: 20 },
-])
+  const equity = accountStore.totalEquity
+  const initial = account.initial_capital
+  const totalReturn = ((equity - initial) / initial) * 100
+  const available = account.available
+  const frozen = account.frozen
+  const marketValue = account.market_value
 
-const strategies = ref([
-  { id: 's1', name: '双均线突破', type: '趋势跟踪', return: 24.5, sharpe: 1.92, status: 'active' },
-  { id: 's2', name: '均值回归', type: '统计套利', return: 18.3, sharpe: 1.65, status: 'active' },
-  { id: 's3', name: '动量策略', type: '趋势跟踪', return: 15.2, sharpe: 1.45, status: 'paused' },
-])
+  return [
+    {
+      label: '总资产',
+      code: 'AUM-001',
+      value: `¥${formatMoney(equity)}`,
+      trend: `${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`,
+      subtext: '较初始资金',
+      large: true,
+      positive: totalReturn >= 0,
+      negative: totalReturn < 0,
+      fill: Math.min((equity / initial) * 50, 100),
+    },
+    {
+      label: '可用资金',
+      code: 'AVL-001',
+      value: `¥${formatMoney(available)}`,
+      subtext: '可交易资金',
+      fill: (available / equity) * 100,
+    },
+    {
+      label: '冻结资金',
+      code: 'FRZ-001',
+      value: `¥${formatMoney(frozen)}`,
+      subtext: '委托占用',
+      fill: (frozen / equity) * 100,
+    },
+    {
+      label: '持仓市值',
+      code: 'POS-001',
+      value: `¥${formatMoney(marketValue)}`,
+      subtext: `占比 ${((marketValue / equity) * 100).toFixed(1)}%`,
+      fill: (marketValue / equity) * 100,
+    },
+    {
+      label: '活跃订单',
+      code: 'ORD-ACT',
+      value: orderStore.activeOrderCount.toString(),
+      subtext: '待成交',
+      fill: Math.min(orderStore.activeOrderCount * 10, 100),
+    },
+    {
+      label: '运行策略',
+      code: 'STG-ACT',
+      value: strategyStore.activeCount.toString(),
+      subtext: '策略数',
+      fill: Math.min(strategyStore.activeCount * 20, 100),
+    },
+  ]
+})
 
-function getTrendClass(trend: string) {
+// Methods
+function formatMoney(value: number): string {
+  if (!value) return '0.00'
+  return value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function getTrendClass(trend: string): string {
   if (trend.startsWith('+')) return 'trend-up'
   if (trend.startsWith('-')) return 'trend-down'
   return 'trend-neutral'
 }
 
-function refreshData() {
-  // 刷新数据逻辑
+function getStatusText(status: string): string {
+  const statusMap: Record<string, string> = {
+    'CREATED': '已创建',
+    'PENDING': '已报',
+    'PARTIAL': '部成',
+    'FILLED': '已成',
+    'CANCELLED': '已撤',
+    'REJECTED': '已拒'
+  }
+  return statusMap[status] || status
 }
 
-function createStrategy() {
-  // 创建策略逻辑
+async function refreshData() {
+  loading.value = true
+  const accountId = accountStore.currentAccount?.id || 1
+
+  await Promise.all([
+    accountStore.fetchAccounts(),
+    orderStore.fetchActiveOrders(accountId),
+    orderStore.fetchOrders(accountId),
+    strategyStore.fetchStrategies()
+  ])
+
+  loading.value = false
 }
 
+async function cancelOrder(orderId: string) {
+  try {
+    await orderStore.cancelOrder(orderId)
+    alert('撤单成功')
+  } catch (err: any) {
+    alert('撤单失败: ' + err.message)
+  }
+}
+
+async function submitOrder() {
+  if (!newOrder.value.symbol || !newOrder.value.qty) {
+    alert('请填写完整信息')
+    return
+  }
+
+  try {
+    await orderStore.createOrder({
+      account_id: accountStore.currentAccount?.id || 1,
+      symbol: newOrder.value.symbol,
+      symbol_name: newOrder.value.symbol_name,
+      direction: newOrder.value.direction,
+      qty: newOrder.value.qty,
+      price: newOrder.value.price,
+      order_type: newOrder.value.price ? 'LIMIT' : 'MARKET'
+    })
+
+    alert('下单成功')
+    showCreateOrder.value = false
+    newOrder.value = { symbol: '', symbol_name: '', direction: 'BUY', qty: 100, price: undefined }
+    refreshData()
+  } catch (err: any) {
+    alert('下单失败: ' + err.message)
+  }
+}
+
+// Lifecycle
 onMounted(() => {
-  // 页面加载动画
+  refreshData()
 })
 </script>
 
 <style scoped>
+/* 样式保持原有设计 */
 .dashboard-page {
   animation: fade-in-up 0.6s ease;
 }
 
-/* 页面头部 */
-.page-header {
-  position: relative;
-  margin-bottom: 2rem;
-  padding-bottom: 1.5rem;
-  border-bottom: 1px solid var(--border-subtle);
-}
+/* ... 其他样式与原版相同 ... */
 
-.header-glow {
-  position: absolute;
-  bottom: -1px;
-  left: 0;
-  width: 200px;
-  height: 1px;
-  background: linear-gradient(90deg, var(--neon-cyan), transparent);
-  box-shadow: 0 0 20px var(--neon-cyan);
-}
-
-.header-content {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-title {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.title-icon {
-  font-size: 1.5rem;
-  color: var(--neon-cyan);
-  text-shadow: 0 0 20px var(--neon-cyan);
-}
-
-.header-title h1 {
-  font-family: var(--font-display);
-  font-size: 1.75rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  letter-spacing: 0.02em;
-}
-
-.header-badge {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  padding: 0.25rem 0.75rem;
-  background: var(--neon-cyan-dim);
-  border: 1px solid var(--neon-cyan);
-  color: var(--neon-cyan);
-  letter-spacing: 0.1em;
-}
-
-.header-actions {
-  display: flex;
-  gap: 1rem;
-}
-
-/* 指标卡片 */
-.metrics-section {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.metric-card {
-  position: relative;
-  background: linear-gradient(135deg, var(--bg-layer) 0%, var(--bg-surface) 100%);
-  border: 1px solid var(--border-subtle);
-  padding: 1.25rem;
-  overflow: hidden;
-  animation: fade-in-up 0.6s ease backwards;
-}
-
-.metric-card:hover {
-  border-color: var(--border-medium);
-}
-
-.metric-card.positive:hover {
-  border-color: rgba(0, 240, 255, 0.3);
-  box-shadow: 0 0 30px rgba(0, 240, 255, 0.1);
-}
-
-.metric-card.negative:hover {
-  border-color: rgba(255, 0, 170, 0.3);
-  box-shadow: 0 0 30px rgba(255, 0, 170, 0.1);
-}
-
-.card-glow {
-  position: absolute;
+/* 添加弹窗样式 */
+.modal-overlay {
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
-  opacity: 0.3;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
 }
 
-.metric-card.positive .card-glow {
-  background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+.modal-content {
+  background: var(--bg-layer);
+  border: 1px solid var(--border-subtle);
+  width: 400px;
+  max-width: 90%;
 }
 
-.metric-card.negative .card-glow {
-  background: linear-gradient(90deg, transparent, var(--neon-magenta), transparent);
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.corner {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border-color: var(--border-medium);
+.modal-header h3 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
 }
 
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.modal-body {
+  padding: 1.5rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.cyber-input,
+.cyber-select {
+  width: 100%;
+  padding: 0.75rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+.cyber-input:focus,
+.cyber-select:focus {
+  outline: none;
+  border-color: var(--neon-cyan);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  padding: 1rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.loading-text,
+.empty-text {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-tertiary);
+}
+
+.cancel-btn {
+  padding: 0.25rem 0.5rem;
+  background: rgba(255, 0, 170, 0.1);
+  border: 1px solid var(--neon-magenta);
+  color: var(--neon-magenta);
+  font-size: 0.625rem;
+  cursor: pointer;
+}
+
+.cancel-btn:hover {
+  background: var(--neon-magenta);
+  color: var(--bg-void);
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.625rem;
+  text-transform: uppercase;
+}
+
+.status-badge.created { background: rgba(255, 184, 0, 0.1); color: var(--signal-hold); }
+.status-badge.pending { background: rgba(0, 240, 255, 0.1); color: var(--neon-cyan); }
+.status-badge.partial { background: rgba(107, 44, 255, 0.1); color: var(--neon-purple); }
+.status-badge.filled { background: rgba(0, 255, 136, 0.1); color: #00ff88; }
+.status-badge.cancelled { background: rgba(255, 0, 170, 0.1); color: var(--neon-magenta); }
+.status-badge.rejected { background: rgba(255, 0, 0, 0.1); color: #ff0000; }
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 复用原有样式 */
+.page-header { position: relative; margin-bottom: 2rem; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border-subtle); }
+.header-glow { position: absolute; bottom: -1px; left: 0; width: 200px; height: 1px; background: linear-gradient(90deg, var(--neon-cyan), transparent); box-shadow: 0 0 20px var(--neon-cyan); }
+.header-content { display: flex; justify-content: space-between; align-items: center; }
+.header-title { display: flex; align-items: center; gap: 1rem; }
+.title-icon { font-size: 1.5rem; color: var(--neon-cyan); text-shadow: 0 0 20px var(--neon-cyan); }
+.header-title h1 { font-family: var(--font-display); font-size: 1.75rem; font-weight: 600; color: var(--text-primary); letter-spacing: 0.02em; }
+.header-badge { font-family: var(--font-mono); font-size: 0.625rem; padding: 0.25rem 0.75rem; background: var(--neon-cyan-dim); border: 1px solid var(--neon-cyan); color: var(--neon-cyan); letter-spacing: 0.1em; }
+.header-actions { display: flex; gap: 1rem; }
+
+.metrics-section { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1rem; margin-bottom: 2rem; }
+.metric-card { position: relative; background: linear-gradient(135deg, var(--bg-layer) 0%, var(--bg-surface) 100%); border: 1px solid var(--border-subtle); padding: 1.25rem; overflow: hidden; animation: fade-in-up 0.6s ease backwards; }
+.metric-card:hover { border-color: var(--border-medium); }
+.metric-card.positive:hover { border-color: rgba(0, 240, 255, 0.3); box-shadow: 0 0 30px rgba(0, 240, 255, 0.1); }
+.metric-card.negative:hover { border-color: rgba(255, 0, 170, 0.3); box-shadow: 0 0 30px rgba(255, 0, 170, 0.1); }
+.card-glow { position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent); opacity: 0.3; }
+.metric-card.positive .card-glow { background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent); }
+.metric-card.negative .card-glow { background: linear-gradient(90deg, transparent, var(--neon-magenta), transparent); }
+.corner { position: absolute; width: 6px; height: 6px; border-color: var(--border-medium); }
 .corner.tl { top: 0; left: 0; border-top: 1px solid; border-left: 1px solid; }
 .corner.tr { top: 0; right: 0; border-top: 1px solid; border-right: 1px solid; }
 .corner.bl { bottom: 0; left: 0; border-bottom: 1px solid; border-left: 1px solid; }
 .corner.br { bottom: 0; right: 0; border-bottom: 1px solid; border-right: 1px solid; }
-
 .metric-card.positive .corner { border-color: rgba(0, 240, 255, 0.3); }
 .metric-card.negative .corner { border-color: rgba(255, 0, 170, 0.3); }
-
-.metric-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.75rem;
-}
-
-.metric-label {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
-.metric-code {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  color: var(--text-muted);
-  letter-spacing: 0.05em;
-}
-
-.metric-value {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
-
-.value-main {
-  font-family: var(--font-mono);
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.value-trend {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.value-trend.trend-up {
-  color: var(--signal-buy);
-}
-
-.value-trend.trend-down {
-  color: var(--signal-sell);
-}
-
-.metric-footer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.metric-sub {
-  font-size: 0.625rem;
-  color: var(--text-tertiary);
-}
-
-.metric-bar {
-  height: 2px;
-  background: var(--bg-elevated);
-  overflow: hidden;
-}
-
-.metric-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-amber));
-  transition: width 0.6s ease;
-}
-
-.metric-card.positive .metric-bar-fill {
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple));
-}
-
-.metric-card.negative .metric-bar-fill {
-  background: linear-gradient(90deg, var(--neon-magenta), var(--neon-amber));
-}
-
-/* 主内容区 */
-.dashboard-main {
-  display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 1.5rem;
-  margin-bottom: 1.5rem;
-}
-
-.main-panel, .side-panel {
-  background: linear-gradient(135deg, var(--bg-layer) 0%, var(--bg-surface) 100%);
-  border: 1px solid var(--border-subtle);
-  position: relative;
-}
-
-.main-panel::before, .side-panel::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, var(--neon-cyan), transparent);
-  opacity: 0.5;
-}
-
-.panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.panel-icon {
-  font-size: 1rem;
-  color: var(--neon-cyan);
-}
-
-.panel-title {
-  font-family: var(--font-display);
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.live-indicator {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.1em;
-  color: var(--neon-magenta);
-  margin-left: 0.5rem;
-}
-
-.live-dot {
-  width: 6px;
-  height: 6px;
-  background: var(--neon-magenta);
-  border-radius: 50%;
-  animation: blink 1s ease-in-out infinite;
-}
-
-.time-range {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.range-btn {
-  padding: 0.375rem 0.75rem;
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.05em;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.range-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--border-medium);
-}
-
-.range-btn.active {
-  background: var(--neon-cyan-dim);
-  border-color: var(--neon-cyan);
-  color: var(--neon-cyan);
-}
-
-.panel-content {
-  padding: 1.5rem;
-  min-height: 300px;
-}
-
-.panel-footer {
-  padding: 1rem 1.5rem;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-}
-
-.stat-row {
-  display: flex;
-  justify-content: space-around;
-  gap: 1rem;
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.stat-label {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.1em;
-  color: var(--text-tertiary);
-}
-
-.stat-value {
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.stat-value.positive {
-  color: var(--signal-buy);
-  text-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
-}
-
-/* 信号列表 */
-.signals-section .panel-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem;
-}
-
-.signal-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 1rem;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  cursor: pointer;
-  transition: all 0.3s ease;
-  overflow: hidden;
-}
-
-.signal-item:hover {
-  border-color: var(--border-medium);
-}
-
-.signal-icon {
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.625rem;
-  border-radius: 50%;
-}
-
-.signal-item.buy .signal-icon {
-  background: rgba(0, 240, 255, 0.1);
-  color: var(--signal-buy);
-}
-
-.signal-item.sell .signal-icon {
-  background: rgba(255, 0, 170, 0.1);
-  color: var(--signal-sell);
-}
-
-.signal-item.hold .signal-icon {
-  background: rgba(255, 184, 0, 0.1);
-  color: var(--signal-hold);
-}
-
-.signal-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  flex: 1;
-}
-
-.signal-symbol {
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.signal-strategy {
-  font-size: 0.625rem;
-  color: var(--text-tertiary);
-}
-
-.signal-price {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.125rem;
-}
-
-.price-value {
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--neon-amber);
-}
-
-.price-time {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  color: var(--text-muted);
-}
-
-.signal-glow {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.signal-item:hover .signal-glow {
-  opacity: 1;
-}
-
-.signal-glow.buy { background: var(--signal-buy); box-shadow: 0 0 10px var(--signal-buy); }
-.signal-glow.sell { background: var(--signal-sell); box-shadow: 0 0 10px var(--signal-sell); }
-.signal-glow.hold { background: var(--signal-hold); box-shadow: 0 0 10px var(--signal-hold); }
-
-.panel-badge {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  padding: 0.25rem 0.5rem;
-  background: var(--neon-cyan-dim);
-  border: 1px solid var(--neon-cyan);
-  color: var(--neon-cyan);
-}
-
-/* 底部区域 */
-.dashboard-bottom {
-  display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 1.5rem;
-}
-
-.bottom-panel {
-  background: linear-gradient(135deg, var(--bg-layer) 0%, var(--bg-surface) 100%);
-  border: 1px solid var(--border-subtle);
-  position: relative;
-}
-
-.bottom-panel::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, var(--neon-cyan), transparent);
-  opacity: 0.5;
-}
-
-/* 表格 */
-.cyber-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.cyber-table th {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-  padding: 0.75rem 1rem;
-  text-align: left;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-}
-
-.cyber-table td {
-  padding: 0.875rem 1rem;
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.cyber-table tbody tr:hover {
-  background: var(--bg-surface);
-}
-
-.cell-symbol {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-right: 0.5rem;
-}
-
-.cell-name {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
-.cyber-tag {
-  display: inline-flex;
-  padding: 0.25rem 0.5rem;
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  font-weight: 600;
-}
-
-.cyber-tag.long {
-  background: rgba(0, 240, 255, 0.1);
-  color: var(--signal-buy);
-  border: 1px solid rgba(0, 240, 255, 0.3);
-}
-
-.cyber-tag.short {
-  background: rgba(255, 0, 170, 0.1);
-  color: var(--signal-sell);
-  border: 1px solid rgba(255, 0, 170, 0.3);
-}
-
-.cell-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-}
-
-.cell-bar-fill {
-  height: 4px;
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple));
-  min-width: 20px;
-}
-
-/* 策略列表 */
-.strategies-panel .panel-content {
-  padding: 1rem;
-}
-
-.strategy-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.strategy-item:last-child {
-  border-bottom: none;
-}
-
-.strategy-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.strategy-name {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.strategy-type {
-  font-size: 0.625rem;
-  color: var(--text-tertiary);
-}
-
-.strategy-metrics {
-  display: flex;
-  gap: 1.5rem;
-}
-
-.metric {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.125rem;
-}
-
-.metric-label {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  color: var(--text-tertiary);
-}
-
-.metric-value {
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.metric-value.positive {
-  color: var(--signal-buy);
-}
-
-.metric-value.negative {
-  color: var(--signal-sell);
-}
-
-.strategy-status {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.status-dot.active {
-  background: var(--neon-cyan);
-  box-shadow: 0 0 10px var(--neon-cyan);
-  animation: blink 2s ease-in-out infinite;
-}
-
-.status-dot.paused {
-  background: var(--text-muted);
-}
-
-.status-text {
-  font-family: var(--font-mono);
-  font-size: 0.625rem;
-  color: var(--text-tertiary);
+.metric-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+.metric-label { font-size: 0.75rem; color: var(--text-tertiary); }
+.metric-code { font-family: var(--font-mono); font-size: 0.625rem; color: var(--text-muted); letter-spacing: 0.05em; }
+.metric-value { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1rem; }
+.value-main { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 600; color: var(--text-primary); }
+.value-trend { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 600; }
+.value-trend.trend-up { color: var(--signal-buy); }
+.value-trend.trend-down { color: var(--signal-sell); }
+.metric-footer { display: flex; flex-direction: column; gap: 0.5rem; }
+.metric-sub { font-size: 0.625rem; color: var(--text-tertiary); }
+.metric-bar { height: 2px; background: var(--bg-elevated); overflow: hidden; }
+.metric-bar-fill { height: 100%; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-amber)); transition: width 0.6s ease; }
+.metric-card.positive .metric-bar-fill { background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple)); }
+.metric-card.negative .metric-bar-fill { background: linear-gradient(90deg, var(--neon-magenta), var(--neon-amber)); }
+
+.dashboard-main { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; }
+.main-panel, .side-panel { background: linear-gradient(135deg, var(--bg-layer) 0%, var(--bg-surface) 100%); border: 1px solid var(--border-subtle); position: relative; }
+.main-panel::before, .side-panel::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, var(--neon-cyan), transparent); opacity: 0.5; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.header-left { display: flex; align-items: center; gap: 0.75rem; }
+.panel-icon { font-size: 1rem; color: var(--neon-cyan); }
+.panel-title { font-family: var(--font-display); font-size: 0.9375rem; font-weight: 600; color: var(--text-primary); }
+.live-indicator { display: flex; align-items: center; gap: 0.375rem; font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.1em; color: var(--neon-magenta); margin-left: 0.5rem; }
+.live-dot { width: 6px; height: 6px; background: var(--neon-magenta); border-radius: 50%; animation: blink 1s ease-in-out infinite; }
+.panel-badge { font-family: var(--font-mono); font-size: 0.625rem; padding: 0.25rem 0.5rem; background: var(--neon-cyan-dim); border: 1px solid var(--neon-cyan); color: var(--neon-cyan); }
+.panel-content { padding: 1.5rem; }
+.panel-footer { padding: 1rem 1.5rem; border-top: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.stat-row { display: flex; justify-content: space-around; gap: 1rem; }
+.stat-item { display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+.stat-label { font-family: var(--font-mono); font-size: 0.625rem; letter-spacing: 0.1em; color: var(--text-tertiary); }
+.stat-value { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 600; color: var(--text-primary); }
+.stat-value.positive { color: var(--signal-buy); text-shadow: 0 0 10px rgba(0, 240, 255, 0.3); }
+.stat-value.negative { color: var(--signal-sell); }
+
+.signals-section .panel-content { display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem; }
+.signal-item { position: relative; display: flex; align-items: center; gap: 0.75rem; padding: 0.875rem 1rem; background: var(--bg-surface); border: 1px solid var(--border-subtle); cursor: pointer; transition: all 0.3s ease; overflow: hidden; }
+.signal-item:hover { border-color: var(--border-medium); }
+.signal-icon { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; font-size: 0.625rem; border-radius: 50%; }
+.signal-item.buy .signal-icon { background: rgba(0, 240, 255, 0.1); color: var(--signal-buy); }
+.signal-item.sell .signal-icon { background: rgba(255, 0, 170, 0.1); color: var(--signal-sell); }
+.signal-info { display: flex; flex-direction: column; gap: 0.125rem; flex: 1; }
+.signal-symbol { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 600; color: var(--text-primary); }
+.signal-strategy { font-size: 0.625rem; color: var(--text-tertiary); }
+.signal-price { display: flex; flex-direction: column; align-items: flex-end; gap: 0.125rem; }
+.price-value { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 600; color: var(--neon-amber); }
+.price-time { font-family: var(--font-mono); font-size: 0.625rem; color: var(--text-muted); }
+
+.dashboard-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+.bottom-panel { background: linear-gradient(135deg, var(--bg-layer) 0%, var(--bg-surface) 100%); border: 1px solid var(--border-subtle); position: relative; }
+.bottom-panel::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, var(--neon-cyan), transparent); opacity: 0.5; }
+
+.strategies-panel .panel-content { padding: 1rem; }
+.strategy-item { display: flex; align-items: center; justify-content: space-between; padding: 1rem; border-bottom: 1px solid var(--border-subtle); }
+.strategy-item:last-child { border-bottom: none; }
+.strategy-info { display: flex; flex-direction: column; gap: 0.25rem; }
+.strategy-name { font-weight: 600; color: var(--text-primary); }
+.strategy-type { font-size: 0.625rem; color: var(--text-tertiary); }
+.strategy-metrics { display: flex; gap: 1.5rem; }
+.metric { display: flex; flex-direction: column; align-items: flex-end; gap: 0.125rem; }
+.metric-label { font-family: var(--font-mono); font-size: 0.625rem; color: var(--text-tertiary); }
+.metric-value { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 600; color: var(--text-primary); }
+.metric-value.positive { color: var(--signal-buy); }
+.metric-value.negative { color: var(--signal-sell); }
+.strategy-status { display: flex; align-items: center; gap: 0.5rem; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; }
+.status-dot.active { background: var(--neon-cyan); box-shadow: 0 0 10px var(--neon-cyan); animation: blink 2s ease-in-out infinite; }
+.status-dot.paused { background: var(--text-muted); }
+.status-text { font-family: var(--font-mono); font-size: 0.625rem; color: var(--text-tertiary); }
+
+.cyber-table { width: 100%; border-collapse: collapse; }
+.cyber-table th { font-family: var(--font-mono); font-size: 0.625rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-tertiary); padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); }
+.cyber-table td { padding: 0.875rem 1rem; font-size: 0.875rem; color: var(--text-secondary); border-bottom: 1px solid var(--border-subtle); }
+.cyber-table tbody tr:hover { background: var(--bg-surface); }
+.cell-symbol { font-family: var(--font-mono); font-weight: 600; color: var(--text-primary); margin-right: 0.5rem; }
+.cyber-tag { display: inline-flex; padding: 0.25rem 0.5rem; font-family: var(--font-mono); font-size: 0.625rem; font-weight: 600; }
+.cyber-tag.buy { background: rgba(0, 240, 255, 0.1); color: var(--signal-buy); border: 1px solid rgba(0, 240, 255, 0.3); }
+.cyber-tag.sell { background: rgba(255, 0, 170, 0.1); color: var(--signal-sell); border: 1px solid rgba(255, 0, 170, 0.3); }
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
-/* 响应式 */
 @media (max-width: 1400px) {
-  .metrics-section {
-    grid-template-columns: repeat(3, 1fr);
-  }
-
-  .dashboard-main,
-  .dashboard-bottom {
-    grid-template-columns: 1fr;
-  }
+  .metrics-section { grid-template-columns: repeat(3, 1fr); }
+  .dashboard-main, .dashboard-bottom { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 768px) {
-  .metrics-section {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .header-content {
-    flex-direction: column;
-    gap: 1rem;
-    align-items: flex-start;
-  }
-
-  .time-range {
-    display: none;
-  }
+  .metrics-section { grid-template-columns: repeat(2, 1fr); }
+  .header-content { flex-direction: column; gap: 1rem; align-items: flex-start; }
 }
 </style>

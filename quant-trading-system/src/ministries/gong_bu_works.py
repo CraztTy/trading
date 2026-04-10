@@ -11,9 +11,9 @@
 from typing import Optional
 import pandas as pd
 import numpy as np
-from src.common.logger import get_logger
+from src.common.logger import TradingLogger
 
-logger = get_logger(__name__)
+logger = TradingLogger(__name__)
 
 
 class GongBuWorks:

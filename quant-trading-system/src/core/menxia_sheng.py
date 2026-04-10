@@ -10,9 +10,9 @@
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
-from src.common.logger import get_logger
+from src.common.logger import TradingLogger
 
-logger = get_logger(__name__)
+logger = TradingLogger(__name__)
 
 
 @dataclass
