@@ -10,24 +10,25 @@ from functools import lru_cache
 
 
 class DatabaseSettings(BaseSettings):
-    """数据库配置"""
+    """MySQL数据库配置（SQLAlchemy 2.0 异步）"""
 
+    driver: str = Field(default="mysql+aiomysql", description="数据库驱动")
     host: str = Field(default="localhost", description="数据库主机")
     port: int = Field(default=3306, description="数据库端口")
     name: str = Field(default="quant_trading", description="数据库名称")
     user: str = Field(default="quant_user", description="数据库用户")
-    password: str = Field(default="", description="数据库密码")
-    pool_size: int = Field(default=20, description="连接池大小")
-    max_overflow: int = Field(default=40, description="最大溢出连接数")
+    password: str = Field(default="quant_pass", description="数据库密码")
+    pool_size: int = Field(default=10, description="连接池大小")
+    max_overflow: int = Field(default=20, description="最大溢出连接数")
 
     @property
     def url(self) -> str:
-        """获取数据库连接URL"""
+        """获取异步数据库连接URL"""
         return f"mysql+aiomysql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
 
     @property
     def sync_url(self) -> str:
-        """获取同步数据库连接URL"""
+        """获取同步数据库连接URL（用于Alembic）"""
         return f"mysql+pymysql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
 
 
