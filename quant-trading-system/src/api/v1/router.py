@@ -3,7 +3,7 @@ API v1 路由
 """
 from fastapi import APIRouter
 
-from src.api.v1.endpoints import strategies, backtest, live, health, intelligence, orders, matching, market
+from src.api.v1.endpoints import strategies, backtest, live, health, intelligence, orders, matching, market, monitoring
 
 router = APIRouter(prefix="/v1")
 
@@ -16,3 +16,4 @@ router.include_router(live.router, prefix="/live", tags=["实盘监控"])
 router.include_router(intelligence.router, prefix="/intelligence", tags=["智能分析"])
 router.include_router(health.router, prefix="/health", tags=["健康检查"])
 router.include_router(market.router, prefix="/market", tags=["行情数据"])
+router.include_router(monitoring.router, prefix="/monitoring", tags=["交易监控"])
