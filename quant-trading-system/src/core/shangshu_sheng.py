@@ -2,231 +2,634 @@
 尚书省 - 执行调度与资金清算
 
 职责：
-- 调度六部执行模拟成交
-- 资金清算
-- 持仓管理
-- T+1结算
+- 订单队列管理
+- 资金冻结/解冻
+- 订单路由到执行算法
+- 成交结果处理
+- 持仓更新
+- T+1结算准备
+
+数据流向：
+门下省(审核通过) → 尚书省(执行调度) → 订单成交 → 更新持仓/资金 → 流水记录
 """
-from typing import Dict, List, Optional, Any
+
+import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from enum import Enum
+from typing import Dict, List, Optional, Any, Callable
+from queue import PriorityQueue
+import uuid
+
+from src.strategy.base import Signal, SignalType
+from src.models.order import Order
+from src.models.trade import Trade
+from src.models.position import Position
+from src.models.balance_flow import BalanceFlow
+from src.models.enums import OrderStatus, OrderDirection, FlowType
+from src.common.database import db_manager
 from src.common.logger import TradingLogger
 
 logger = TradingLogger(__name__)
 
 
+class OrderPriority(Enum):
+    """订单优先级"""
+    EMERGENCY = 0    # 紧急（止损/强平）
+    HIGH = 1         # 高优先级
+    NORMAL = 2       # 普通
+    LOW = 3          # 低优先级（大额拆单）
+
+
+class ExecutionStatus(Enum):
+    """执行状态"""
+    PENDING = "pending"           # 待执行
+    FREEZING = "freezing"         # 冻结资金中
+    FROZEN = "frozen"             # 资金已冻结
+    SUBMITTING = "submitting"     # 提交中
+    SUBMITTED = "submitted"       # 已提交
+    PARTIAL_FILLED = "partial_filled"  # 部分成交
+    FILLED = "filled"             # 全部成交
+    CANCELLED = "cancelled"       # 已取消
+    REJECTED = "rejected"         # 被拒绝
+    ERROR = "error"               # 错误
+
+
+@dataclass
+class OrderRequest:
+    """订单请求"""
+    signal: Signal
+    account_id: int
+    priority: OrderPriority = OrderPriority.NORMAL
+    created_at: datetime = field(default_factory=datetime.now)
+    request_id: str = field(default_factory=lambda: str(uuid.uuid4())[:16])
+
+    def __lt__(self, other):
+        """优先级比较（用于优先队列）"""
+        return self.priority.value < other.priority.value
+
+
+@dataclass
+class ExecutionResult:
+    """执行结果"""
+    success: bool
+    order_id: Optional[str] = None
+    trade_id: Optional[str] = None
+    filled_qty: int = 0
+    filled_price: Optional[Decimal] = None
+    message: str = ""
+    error_code: Optional[str] = None
+
+
+class OrderQueue:
+    """订单队列管理"""
+
+    def __init__(self):
+        self._queue: PriorityQueue = PriorityQueue()
+        self._orders: Dict[str, OrderRequest] = {}
+        self._stats = {"total_enqueued": 0, "total_dequeued": 0}
+
+    def enqueue(self, request: OrderRequest) -> str:
+        """添加订单到队列"""
+        self._queue.put(request)
+        self._orders[request.request_id] = request
+        self._stats["total_enqueued"] += 1
+        logger.info(f"订单入队: {request.request_id} [优先级:{request.priority.name}]")
+        return request.request_id
+
+    def dequeue(self) -> Optional[OrderRequest]:
+        """从队列取出订单"""
+        if self._queue.empty():
+            return None
+
+        request = self._queue.get()
+        self._stats["total_dequeued"] += 1
+        return request
+
+    def get_request(self, request_id: str) -> Optional[OrderRequest]:
+        """获取订单请求"""
+        return self._orders.get(request_id)
+
+    def is_empty(self) -> bool:
+        """队列是否为空"""
+        return self._queue.empty()
+
+    def size(self) -> int:
+        """队列大小"""
+        return self._queue.qsize()
+
+    def get_stats(self) -> Dict[str, int]:
+        """获取统计"""
+        return self._stats.copy()
+
+
+class CapitalManager:
+    """资金清算管理器"""
+
+    def __init__(self):
+        self._frozen_amount: Dict[int, Decimal] = {}  # account_id -> amount
+        self._stats = {"total_frozen": 0, "total_unfrozen": 0, "total_fee": Decimal("0")}
+
+    async def freeze_for_order(
+        self,
+        account_id: int,
+        order_id: str,
+        amount: Decimal
+    ) -> bool:
+        """
+        为订单冻结资金
+
+        Returns:
+            True: 冻结成功
+            False: 资金不足
+        """
+        # 这里应该从数据库查询账户余额并冻结
+        # 简化版本：记录冻结金额
+        current_frozen = self._frozen_amount.get(account_id, Decimal("0"))
+        self._frozen_amount[account_id] = current_frozen + amount
+        self._stats["total_frozen"] += 1
+
+        logger.info(f"资金冻结: account={account_id}, order={order_id}, amount={amount}")
+        return True
+
+    async def unfreeze_for_order(
+        self,
+        account_id: int,
+        order_id: str,
+        amount: Decimal
+    ):
+        """解冻资金（撤单或失败时）"""
+        current_frozen = self._frozen_amount.get(account_id, Decimal("0"))
+        self._frozen_amount[account_id] = max(Decimal("0"), current_frozen - amount)
+        self._stats["total_unfrozen"] += 1
+
+        logger.info(f"资金解冻: account={account_id}, order={order_id}, amount={amount}")
+
+    async def deduct_for_trade(
+        self,
+        account_id: int,
+        trade: Trade
+    ) -> Optional[BalanceFlow]:
+        """
+        扣除成交资金并创建流水
+
+        Returns:
+            BalanceFlow or None
+        """
+        # 计算实际扣除金额（含费用）
+        trade_amount = trade.amount
+        commission = trade.commission
+        stamp_tax = trade.stamp_tax
+        transfer_fee = trade.transfer_fee
+
+        total_deduction = trade_amount + commission + stamp_tax + transfer_fee
+
+        # 解冻并扣除
+        await self.unfreeze_for_order(account_id, str(trade.order_id), total_deduction)
+
+        # 创建流水记录
+        flow = BalanceFlow(
+            account_id=account_id,
+            flow_type=FlowType.TRADE_BUY if trade.direction == OrderDirection.BUY else FlowType.TRADE_SELL,
+            amount=-total_deduction if trade.direction == OrderDirection.BUY else total_deduction,
+            balance_before=Decimal("0"),  # 实际应该从账户获取
+            balance_after=Decimal("0"),
+            trade_id=trade.id,
+            description=f"{'买入' if trade.direction == OrderDirection.BUY else '卖出'}成交: {trade.symbol}"
+        )
+
+        self._stats["total_fee"] += commission + stamp_tax + transfer_fee
+
+        logger.info(
+            f"资金扣除: account={account_id}, trade={trade.id}, "
+            f"amount={trade_amount}, fee={commission + stamp_tax + transfer_fee}"
+        )
+
+        return flow
+
+    def get_frozen_amount(self, account_id: int) -> Decimal:
+        """获取账户冻结金额"""
+        return self._frozen_amount.get(account_id, Decimal("0"))
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计"""
+        return self._stats.copy()
+
+
+class PositionManager:
+    """持仓管理器"""
+
+    def __init__(self):
+        self._positions: Dict[str, Position] = {}  # position_key -> Position
+        self._stats = {"total_opened": 0, "total_closed": 0}
+
+    def _get_position_key(self, account_id: int, symbol: str) -> str:
+        """生成持仓键"""
+        return f"{account_id}:{symbol}"
+
+    async def update_position(self, trade: Trade) -> Position:
+        """
+        根据成交更新持仓
+
+        Returns:
+            更新后的持仓
+        """
+        key = self._get_position_key(trade.account_id, trade.symbol)
+        position = self._positions.get(key)
+
+        if trade.direction == OrderDirection.BUY:
+            # 买入开仓或加仓
+            if position is None:
+                position = Position(
+                    account_id=trade.account_id,
+                    symbol=trade.symbol,
+                    total_qty=trade.quantity,
+                    available_qty=trade.quantity,
+                    frozen_qty=0,
+                    cost_price=trade.price,
+                    cost_amount=trade.amount,
+                    market_price=trade.price
+                )
+                self._positions[key] = position
+                self._stats["total_opened"] += 1
+            else:
+                # 加仓，更新成本价
+                old_cost = position.cost_amount
+                new_cost = trade.amount
+                total_qty = position.total_qty + trade.quantity
+
+                position.total_qty = total_qty
+                position.available_qty += trade.quantity
+                position.cost_amount = old_cost + new_cost
+                position.cost_price = position.cost_amount / total_qty
+
+        else:  # SELL
+            # 卖出平仓或减仓
+            if position:
+                position.total_qty -= trade.quantity
+                position.available_qty -= trade.quantity
+                position.cost_amount = position.total_qty * position.cost_price
+
+                if position.total_qty <= 0:
+                    # 全部平仓
+                    del self._positions[key]
+                    self._stats["total_closed"] += 1
+
+        logger.info(
+            f"持仓更新: {trade.symbol}, qty={trade.quantity}, "
+            f"direction={trade.direction.value}, remaining={position.total_qty if position else 0}"
+        )
+
+        return position
+
+    def get_position(self, account_id: int, symbol: str) -> Optional[Position]:
+        """获取持仓"""
+        key = self._get_position_key(account_id, symbol)
+        return self._positions.get(key)
+
+    def get_positions(self, account_id: int) -> List[Position]:
+        """获取账户所有持仓"""
+        prefix = f"{account_id}:"
+        return [p for k, p in self._positions.items() if k.startswith(prefix)]
+
+    def get_stats(self) -> Dict[str, int]:
+        """获取统计"""
+        return self._stats.copy()
+
+
+class ExecutionEngine:
+    """执行引擎"""
+
+    def __init__(self):
+        self._execution_algorithms: Dict[str, Callable] = {}
+
+    def register_algorithm(self, name: str, algorithm: Callable):
+        """注册执行算法"""
+        self._execution_algorithms[name] = algorithm
+
+    async def execute(
+        self,
+        order: Order,
+        algorithm: str = "market"
+    ) -> ExecutionResult:
+        """
+        执行订单
+
+        Args:
+            order: 订单
+            algorithm: 执行算法名称
+
+        Returns:
+            执行结果
+        """
+        # 简化版本：模拟立即成交
+        # 实际应该调用券商API或撮合引擎
+
+        try:
+            # 模拟成交价格（滑点）
+            slippage = Decimal("0.001")  # 0.1%滑点
+            if order.direction == OrderDirection.BUY:
+                filled_price = order.price * (1 + slippage)
+            else:
+                filled_price = order.price * (1 - slippage)
+
+            filled_qty = order.quantity
+
+            # 计算费用
+            amount = filled_price * filled_qty
+            commission = max(amount * Decimal("0.0003"), Decimal("5"))  # 佣金
+            stamp_tax = amount * Decimal("0.001") if order.direction == OrderDirection.SELL else Decimal("0")  # 印花税
+            transfer_fee = amount * Decimal("0.00002")  # 过户费
+
+            return ExecutionResult(
+                success=True,
+                order_id=str(order.id),
+                trade_id=str(uuid.uuid4())[:16],
+                filled_qty=filled_qty,
+                filled_price=filled_price,
+                message="成交成功"
+            )
+
+        except Exception as e:
+            logger.error(f"订单执行失败: {e}")
+            return ExecutionResult(
+                success=False,
+                error_code="EXEC_ERROR",
+                message=str(e)
+            )
+
+
 class ShangshuSheng:
-    """尚书省：执行调度中心"""
+    """
+    尚书省 - 执行调度中心（单例）
 
-    def __init__(self, config: dict):
-        self.config = config
-        self.positions: Dict[str, Dict] = {}  # 持仓
-        self.cash: float = config.get('initial_capital', 1_000_000.0)
-        self.total_value: float = self.cash
+    职责：
+    - 订单队列管理
+    - 资金冻结/解冻
+    - 订单执行
+    - 持仓更新
+    - 流水记录
+    """
 
-        # 交易费用
-        self.commission_rate = config.get('commission_rate', 0.0003)
-        self.min_commission = config.get('min_commission', 5.0)
-        self.stamp_tax_rate = config.get('stamp_tax_rate', 0.001)
-        self.transfer_fee_rate = config.get('transfer_fee_rate', 0.00002)
+    _instance = None
 
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+
+        self._initialized = True
+
+        # 订单队列
+        self.order_queue = OrderQueue()
+
+        # 资金管理
+        self.capital_manager = CapitalManager()
+
+        # 持仓管理
+        self.position_manager = PositionManager()
+
+        # 执行引擎
+        self.execution_engine = ExecutionEngine()
+
+        # 回调
+        self._on_trade_callbacks: List[Callable[[Trade], None]] = []
+        self._on_position_callbacks: List[Callable[[Position], None]] = []
+
+        # 运行状态
+        self._running = False
+        self._worker_task: Optional[asyncio.Task] = None
+
+        # 统计
+        self._stats = {
+            "orders_submitted": 0,
+            "orders_executed": 0,
+            "orders_rejected": 0,
+            "trades_completed": 0,
+        }
+
+        logger.info("尚书省初始化完成")
+
+    async def start(self):
+        """启动执行调度"""
+        if self._running:
+            return
+
+        self._running = True
+        self._worker_task = asyncio.create_task(self._worker_loop())
+        logger.info("尚书省执行调度已启动")
+
+    async def stop(self):
+        """停止执行调度"""
+        self._running = False
+
+        if self._worker_task:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
+
+        logger.info("尚书省执行调度已停止")
+
+    async def _worker_loop(self):
+        """订单处理工作循环"""
+        while self._running:
+            try:
+                # 从队列获取订单
+                request = self.order_queue.dequeue()
+                if request:
+                    await self._process_order(request)
+                else:
+                    # 队列为空，等待一段时间
+                    await asyncio.sleep(0.1)
+
+            except Exception as e:
+                logger.error(f"订单处理异常: {e}")
+                await asyncio.sleep(1)
+
+    async def submit_signal(
+        self,
+        signal: Signal,
+        account_id: int,
+        priority: OrderPriority = OrderPriority.NORMAL
+    ) -> str:
+        """
+        提交信号到执行队列
+
+        Args:
+            signal: 交易信号
+            account_id: 账户ID
+            priority: 优先级
+
+        Returns:
+            request_id
+        """
+        request = OrderRequest(
+            signal=signal,
+            account_id=account_id,
+            priority=priority
+        )
+
+        request_id = self.order_queue.enqueue(request)
+        self._stats["orders_submitted"] += 1
+
+        logger.info(f"信号提交: {request_id} {signal.symbol} {signal.type.value}")
+        return request_id
+
+    async def _process_order(self, request: OrderRequest):
+        """处理订单请求"""
+        signal = request.signal
+        account_id = request.account_id
+
+        try:
+            # 1. 创建订单
+            order = Order(
+                account_id=account_id,
+                symbol=signal.symbol,
+                direction=OrderDirection.BUY if signal.type == SignalType.BUY else OrderDirection.SELL,
+                order_type="MARKET",  # 简化处理
+                quantity=signal.volume or 100,
+                price=signal.price or Decimal("0"),
+                status=OrderStatus.PENDING
+            )
+
+            # 2. 冻结资金
+            freeze_amount = order.price * order.quantity * Decimal("1.002")  # 预留费用
+            frozen = await self.capital_manager.freeze_for_order(
+                account_id, str(order.id), freeze_amount
+            )
+
+            if not frozen:
+                self._stats["orders_rejected"] += 1
+                logger.warning(f"资金冻结失败: {account_id} {signal.symbol}")
+                return
+
+            # 3. 执行订单
+            result = await self.execution_engine.execute(order)
+
+            if not result.success:
+                # 执行失败，解冻资金
+                await self.capital_manager.unfreeze_for_order(
+                    account_id, str(order.id), freeze_amount
+                )
+                self._stats["orders_rejected"] += 1
+                logger.warning(f"订单执行失败: {result.message}")
+                return
+
+            # 4. 创建成交记录
+            trade = Trade(
+                order_id=order.id,
+                account_id=account_id,
+                symbol=signal.symbol,
+                direction=order.direction,
+                quantity=result.filled_qty,
+                price=result.filled_price,
+                amount=result.filled_price * result.filled_qty,
+                commission=result.filled_amount * Decimal("0.0003") if hasattr(result, 'filled_amount') else Decimal("0"),
+                stamp_tax=result.filled_amount * Decimal("0.001") if order.direction == OrderDirection.SELL and hasattr(result, 'filled_amount') else Decimal("0"),
+                transfer_fee=result.filled_amount * Decimal("0.00002") if hasattr(result, 'filled_amount') else Decimal("0"),
+            )
+
+            # 5. 资金清算
+            await self.capital_manager.deduct_for_trade(account_id, trade)
+
+            # 6. 更新持仓
+            position = await self.position_manager.update_position(trade)
+
+            # 7. 触发回调
+            self._notify_trade(trade)
+            if position:
+                self._notify_position(position)
+
+            self._stats["orders_executed"] += 1
+            self._stats["trades_completed"] += 1
+
+            logger.info(
+                f"订单执行完成: {signal.symbol}, qty={result.filled_qty}, "
+                f"price={result.filled_price}"
+            )
+
+        except Exception as e:
+            logger.error(f"订单处理失败: {e}")
+            self._stats["orders_rejected"] += 1
+
+    def _notify_trade(self, trade: Trade):
+        """通知成交"""
+        for callback in self._on_trade_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(trade))
+                else:
+                    callback(trade)
+            except Exception as e:
+                logger.error(f"成交回调失败: {e}")
+
+    def _notify_position(self, position: Position):
+        """通知持仓更新"""
+        for callback in self._on_position_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(position))
+                else:
+                    callback(position)
+            except Exception as e:
+                logger.error(f"持仓回调失败: {e}")
+
+    def on_trade(self, callback: Callable[[Trade], None]):
+        """注册成交回调"""
+        self._on_trade_callbacks.append(callback)
+
+    def on_position(self, callback: Callable[[Position], None]):
+        """注册持仓更新回调"""
+        self._on_position_callbacks.append(callback)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        return {
+            **self._stats,
+            "queue": self.order_queue.get_stats(),
+            "capital": self.capital_manager.get_stats(),
+            "position": self.position_manager.get_stats(),
+        }
+
+    # 兼容旧版API
     async def execute_orders(
         self,
         signals: List[Dict[str, Any]],
         market_data: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """执行订单列表"""
-        executed_orders = []
-
-        for signal in signals:
-            try:
-                result = await self._execute_single(signal, market_data)
-                if result:
-                    executed_orders.append(result)
-            except Exception as e:
-                logger.error(f"订单执行失败: {e}")
-
-        return executed_orders
-
-    async def _execute_single(
-        self,
-        signal: Dict[str, Any],
-        market_data: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """执行单个订单"""
-        code = signal['code']
-        direction = signal['direction']
-        price = signal['price']
-        qty = signal['qty']
-
-        # 检查资金/持仓
-        if direction == 'BUY':
-            if not self._has_enough_cash(price, qty):
-                logger.warning(f"资金不足: {code}")
-                return None
-        else:
-            if not self._has_enough_position(code, qty):
-                logger.warning(f"持仓不足: {code}")
-                return None
-
-        # 计算费用
-        amount = price * qty
-        commission = self._calc_commission(amount)
-        stamp_tax = self._calc_stamp_tax(amount, direction)
-        transfer_fee = self._calc_transfer_fee(amount)
-        total_cost = commission + stamp_tax + transfer_fee
-
-        # 执行交易
-        if direction == 'BUY':
-            self.cash -= (amount + total_cost)
-            self._add_position(code, qty, price, signal.get('stop_loss'), signal.get('take_profit'))
-        else:
-            self.cash += (amount - total_cost)
-            self._reduce_position(code, qty)
-
-        # 更新总市值
-        self._update_total_value(market_data)
-
-        result = {
-            'order_id': f"ORD{datetime.now().strftime('%Y%m%d%H%M%S')}",
-            'code': code,
-            'direction': direction,
-            'price': price,
-            'qty': qty,
-            'amount': amount,
-            'commission': commission,
-            'stamp_tax': stamp_tax,
-            'transfer_fee': transfer_fee,
-            'total_cost': total_cost,
-            'timestamp': datetime.now().isoformat(),
-            'cash_after': self.cash,
-            'total_value': self.total_value
-        }
-
-        logger.info(f"订单执行成功: {result}")
-        return result
-
-    def _has_enough_cash(self, price: float, qty: float) -> bool:
-        """检查资金是否充足"""
-        required = price * qty * 1.002  # 预留费用
-        return self.cash >= required
-
-    def _has_enough_position(self, code: str, qty: float) -> bool:
-        """检查持仓是否充足"""
-        position = self.positions.get(code, {})
-        available = position.get('qty', 0) - position.get('frozen', 0)
-        return available >= qty
-
-    def _calc_commission(self, amount: float) -> float:
-        """计算佣金"""
-        commission = amount * self.commission_rate
-        return max(commission, self.min_commission)
-
-    def _calc_stamp_tax(self, amount: float, direction: str) -> float:
-        """计算印花税（仅卖出）"""
-        if direction == 'SELL':
-            return amount * self.stamp_tax_rate
-        return 0.0
-
-    def _calc_transfer_fee(self, amount: float) -> float:
-        """计算过户费"""
-        return amount * self.transfer_fee_rate
-
-    def _add_position(
-        self,
-        code: str,
-        qty: float,
-        price: float,
-        stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None
     ):
-        """增加持仓"""
-        if code not in self.positions:
-            self.positions[code] = {
-                'qty': 0,
-                'cost': 0,
-                'frozen': 0,
-                'stop_loss': stop_loss,
-                'take_profit': take_profit
-            }
+        """执行订单列表（兼容旧版API）"""
+        results = []
 
-        position = self.positions[code]
-        old_qty = position['qty']
-        old_cost = position['cost']
+        for sig_dict in signals:
+            signal = Signal(
+                type=SignalType(sig_dict.get("direction", "buy").lower()),
+                symbol=sig_dict.get("code", ""),
+                timestamp=datetime.now(),
+                price=Decimal(str(sig_dict.get("price", 0))),
+                volume=sig_dict.get("qty", 0)
+            )
 
-        # 计算新的平均成本
-        position['qty'] += qty
-        position['cost'] = (old_cost * old_qty + price * qty) / position['qty']
+            request_id = await self.submit_signal(signal, sig_dict.get("account_id", 0))
+            results.append({"request_id": request_id, "status": "submitted"})
 
-        if stop_loss:
-            position['stop_loss'] = stop_loss
-        if take_profit:
-            position['take_profit'] = take_profit
-
-    def _reduce_position(self, code: str, qty: float):
-        """减少持仓"""
-        if code in self.positions:
-            self.positions[code]['qty'] -= qty
-            if self.positions[code]['qty'] <= 0:
-                del self.positions[code]
-
-    def _update_total_value(self, market_data: Dict[str, Any]):
-        """更新总市值"""
-        position_value = 0
-        for code, position in self.positions.items():
-            price = market_data.get(code, {}).get('close', position['cost'])
-            position_value += position['qty'] * price
-        self.total_value = self.cash + position_value
+        return results
 
     def get_portfolio_state(self) -> Dict[str, Any]:
-        """获取账户状态"""
-        total_position_value = sum(
-            p['qty'] * p.get('cost', 0)
-            for p in self.positions.values()
-        )
-
+        """获取账户状态（兼容旧版）"""
         return {
-            'cash': self.cash,
-            'total_value': self.total_value,
-            'total_position': total_position_value,
-            'positions': self.positions,
-            'total_position_pct': total_position_value / self.total_value if self.total_value > 0 else 0
+            "cash": 0,  # 应该从账户获取
+            "total_value": 0,
+            "positions": {},
         }
 
-    async def check_stops(
-        self,
-        market_data: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """检查止盈止损"""
-        stop_signals = []
 
-        for code, position in self.positions.items():
-            current_price = market_data.get(code, {}).get('close')
-            if not current_price:
-                continue
-
-            stop_loss = position.get('stop_loss')
-            take_profit = position.get('take_profit')
-
-            # 检查止损
-            if stop_loss and current_price <= stop_loss:
-                stop_signals.append({
-                    'code': code,
-                    'direction': 'SELL',
-                    'price': current_price,
-                    'qty': position['qty'],
-                    'reason': 'STOP_LOSS',
-                    'trigger_price': stop_loss
-                })
-            # 检查止盈
-            elif take_profit and current_price >= take_profit:
-                stop_signals.append({
-                    'code': code,
-                    'direction': 'SELL',
-                    'price': current_price,
-                    'qty': position['qty'],
-                    'reason': 'TAKE_PROFIT',
-                    'trigger_price': take_profit
-                })
-
-        return stop_signals
+# 全局尚书省实例
+shangshu_sheng = ShangshuSheng()
