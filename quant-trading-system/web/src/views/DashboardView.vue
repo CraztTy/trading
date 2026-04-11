@@ -50,6 +50,9 @@
       </div>
     </div>
 
+    <!-- 三省六部数据流监控 -->
+    <ShengFlowMonitor />
+
     <!-- 主内容区 -->
     <div class="main-grid">
       <!-- 左侧：收益曲线 -->
@@ -255,6 +258,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
+import ShengFlowMonitor from '@/components/dashboard/ShengFlowMonitor.vue'
 import * as echarts from 'echarts'
 import {
   Wallet,
