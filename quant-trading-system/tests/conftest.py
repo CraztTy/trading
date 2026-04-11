@@ -19,11 +19,54 @@ import os
 os.environ["TESTING"] = "true"
 
 
+# ==================== Mock Database Dependency ====================
+
+@pytest.fixture
+def mock_db():
+    """Mock数据库依赖 - 用于API测试"""
+    from unittest.mock import AsyncMock, MagicMock
+    from src.models.base import get_db
+    from src.main import app
+
+    # 创建Mock会话
+    mock_session = AsyncMock()
+    mock_session.commit = AsyncMock()
+    mock_session.rollback = AsyncMock()
+    mock_session.add = AsyncMock()
+    mock_session.refresh = AsyncMock()
+
+    # Mock查询结果 - 返回None（订单不存在）
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    # Mock get 方法
+    async def mock_get(model, id):
+        return None
+    mock_session.get = mock_get
+
+    # 覆盖依赖
+    async def override_get_db():
+        yield mock_session
+
+    original_override = app.dependency_overrides.get(get_db)
+    app.dependency_overrides[get_db] = override_get_db
+
+    yield mock_session
+
+    # 恢复原始依赖
+    if original_override:
+        app.dependency_overrides[get_db] = original_override
+    else:
+        app.dependency_overrides.pop(get_db, None)
+
+
 # ==================== HTTP Client Fixtures ====================
 
 @pytest.fixture
-def client():
-    """FastAPI测试客户端 - 同步模式"""
+def client(mock_db):
+    """FastAPI测试客户端 - 同步模式（带Mock数据库）"""
     from fastapi.testclient import TestClient
     from src.main import app
     with TestClient(app) as test_client:
