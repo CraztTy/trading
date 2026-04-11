@@ -22,6 +22,20 @@ from src.common.logger import TradingLogger
 
 logger = TradingLogger(__name__)
 
+# 延迟导入太子院（避免循环导入）
+_crown_prince = None
+_crown_prince_imported = False
+
+
+def _get_crown_prince():
+    """获取太子院实例（延迟加载）"""
+    global _crown_prince, _crown_prince_imported
+    if not _crown_prince_imported:
+        from src.core.crown_prince import crown_prince, DataType
+        _crown_prince = crown_prince
+        _crown_prince_imported = True
+    return _crown_prince
+
 
 class MarketDataManager:
     """
@@ -69,6 +83,9 @@ class MarketDataManager:
         # 运行状态
         self._running = False
         self._tasks: Set[asyncio.Task] = set()
+
+        # 初始化太子院集成
+        self._setup_crown_prince()
 
     async def start(self):
         """启动数据管理器"""
@@ -118,10 +135,20 @@ class MarketDataManager:
 
     def _on_tick_received(self, tick: TickData):
         """收到tick数据的回调"""
-        # 更新最新缓存
+        # 1. 太子院校验与标准化
+        cp = _get_crown_prince()
+        if cp:
+            result = cp.process_tick(tick)
+            if not result.is_valid:
+                logger.warning(f"Tick数据校验失败: {result.errors}")
+                return
+            # 使用标准化后的代码
+            tick = result.data
+
+        # 2. 更新最新缓存
         self.latest_ticks[tick.symbol] = tick
 
-        # K线合成
+        # 3. K线合成
         if tick.symbol in self.kline_builders:
             completed_bars = self.kline_builders[tick.symbol].on_tick(tick)
 
@@ -130,7 +157,7 @@ class MarketDataManager:
                 if bar:
                     self._on_kline_completed(bar)
 
-        # 触发tick回调
+        # 4. 触发tick回调
         self._on_tick_processed(tick)
 
     def _on_tick_processed(self, tick: TickData):
@@ -147,14 +174,24 @@ class MarketDataManager:
 
     def _on_kline_completed(self, kline: KLineData):
         """K线完成回调"""
-        # 执行回调
+        # 1. 太子院校验与标准化
+        cp = _get_crown_prince()
+        if cp:
+            result = cp.process_kline(kline)
+            if not result.is_valid:
+                logger.warning(f"K线数据校验失败: {result.errors}")
+                return
+            # 使用标准化后的数据
+            kline = result.data
+
+        # 2. 执行回调
         for callback in self.on_kline_callbacks:
             try:
                 callback(kline)
             except Exception as e:
                 logger.error(f"K线回调执行失败: {e}")
 
-        # WebSocket推送 (异步)
+        # 3. WebSocket推送 (异步)
         asyncio.create_task(self._broadcast_kline(kline))
 
     async def _broadcast_tick(self, tick: TickData):
@@ -300,3 +337,58 @@ class MarketDataManager:
     def remove_kline_callback(self, callback: Callable[[KLineData], None]):
         """移除K线回调"""
         self.on_kline_callbacks.discard(callback)
+
+    def _setup_crown_prince(self):
+        """设置太子院集成 - 将MarketDataManager的回调注册到太子院"""
+        cp = _get_crown_prince()
+        if not cp:
+            logger.warning("太子院未初始化，跳过集成设置")
+            return
+
+        from src.core.crown_prince import DataType
+
+        # 注册Tick处理器
+        cp.register_handler(DataType.TICK, self._handle_crown_prince_tick)
+
+        # 注册K线处理器
+        cp.register_handler(DataType.KLINE, self._handle_crown_prince_kline)
+
+        logger.info("太子院集成已设置")
+
+    def _handle_crown_prince_tick(self, tick: TickData, validation_result):
+        """太子院分发的Tick数据处理器"""
+        # 这里可以添加额外的处理逻辑
+        # 例如：存储到数据库、触发策略计算等
+        logger.debug(f"太子院分发Tick: {tick.symbol} @ {tick.price}")
+
+    def _handle_crown_prince_kline(self, kline: KLineData, validation_result):
+        """太子院分发的K线数据处理器"""
+        logger.debug(f"太子院分发K线: {kline.symbol} [{kline.period}]")
+
+    def add_crown_prince_handler(self, data_type, handler: Callable):
+        """
+        添加太子院处理器
+
+        用于其他模块（如中书省策略）注册数据处理器
+        """
+        cp = _get_crown_prince()
+        if cp:
+            cp.register_handler(data_type, handler)
+            logger.info(f"已注册太子院处理器: {handler.__name__}")
+
+    def get_crown_prince_stats(self) -> dict:
+        """获取太子院统计信息"""
+        cp = _get_crown_prince()
+        return cp.get_stats() if cp else {}
+
+    def add_banned_stock(self, code: str, reason: str = ""):
+        """添加禁售股票"""
+        cp = _get_crown_prince()
+        if cp:
+            cp.add_banned_stock(code, reason)
+
+    def remove_banned_stock(self, code: str):
+        """移除禁售股票"""
+        cp = _get_crown_prince()
+        if cp:
+            cp.remove_banned_stock(code)
