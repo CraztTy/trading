@@ -227,7 +227,7 @@ class TestSimulatedMatchingEngine:
 
         # Assert
         assert result.success is True
-        assert result.filled_qty >= 10000  # 至少成交30%
+        assert result.filled_qty >= 6000  # 至少成交30% (20000 * 0.3 = 6000)
         assert result.filled_qty <= 20000  # 不超过订单量
         assert result.filled_qty % 100 == 0  # 对齐到100股
 

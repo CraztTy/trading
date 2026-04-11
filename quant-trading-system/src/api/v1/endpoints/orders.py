@@ -27,7 +27,7 @@ class OrderCreateRequest(BaseModel):
     account_id: int = Field(..., description="账户ID")
     symbol: str = Field(..., min_length=6, max_length=16, description="股票代码")
     direction: OrderDirection = Field(..., description="买卖方向")
-    qty: int = Field(..., gt=0, description="数量")
+    qty: int = Field(..., gt=0, le=100_000_000, description="数量（最大1亿股）")
     price: Optional[Decimal] = Field(None, gt=0, description="价格（限价单必填）")
     order_type: OrderType = Field(default=OrderType.LIMIT, description="订单类型")
     strategy_id: Optional[int] = Field(None, description="策略ID")
@@ -36,8 +36,20 @@ class OrderCreateRequest(BaseModel):
     @validator('price')
     def validate_price(cls, v, values):
         """验证价格"""
-        if values.get('order_type') == OrderType.LIMIT and v is None:
-            raise ValueError('限价单必须指定价格')
+        if v is None:
+            if values.get('order_type') == OrderType.LIMIT:
+                raise ValueError('限价单必须指定价格')
+            return v
+
+        # 验证价格精度（A股最多2位小数）
+        quantized = v.quantize(Decimal('0.01'))
+        if v != quantized:
+            raise ValueError('价格最多支持2位小数')
+
+        # 验证价格范围（A股价格范围 0.01 - 99999.99）
+        if v > Decimal('99999.99'):
+            raise ValueError('价格超出有效范围')
+
         return v
 
 

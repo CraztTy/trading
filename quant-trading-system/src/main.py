@@ -43,25 +43,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     - 保存运行状态
     - 清理资源
     """
+    import os
+
     logger.info("=" * 60)
     logger.info(f"启动 {settings.app_name}")
     logger.info(f"环境: {settings.app_env}")
     logger.info(f"时间: {datetime.now().isoformat()}")
     logger.info("=" * 60)
 
+    # 检测测试模式
+    is_testing = os.environ.get("TESTING", "false").lower() == "true"
+
     # 启动初始化
     try:
-        # 初始化行情数据管理器
-        logger.info("正在初始化行情数据管理器...")
-        market_manager = MarketDataManager()
+        if not is_testing:
+            # 初始化行情数据管理器
+            logger.info("正在初始化行情数据管理器...")
+            market_manager = MarketDataManager()
 
-        # 注册 AKShare 网关
-        akshare_gateway = AKShareGateway()
-        market_manager.register_gateway("akshare", akshare_gateway)
+            # 注册 AKShare 网关
+            akshare_gateway = AKShareGateway()
+            market_manager.register_gateway("akshare", akshare_gateway)
 
-        # 启动行情数据服务
-        await market_manager.start()
-        logger.info("行情数据管理器启动完成")
+            # 启动行情数据服务
+            await market_manager.start()
+            logger.info("行情数据管理器启动完成")
+        else:
+            logger.info("测试模式: 跳过行情数据管理器启动")
 
         # TODO: 初始化数据库连接池
         # TODO: 加载策略配置
@@ -76,10 +84,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # 关闭清理
     logger.info("正在关闭应用...")
     try:
-        # 关闭行情数据管理器
-        market_manager = MarketDataManager()
-        await market_manager.stop()
-        logger.info("行情数据管理器已关闭")
+        if not is_testing:
+            # 关闭行情数据管理器
+            market_manager = MarketDataManager()
+            await market_manager.stop()
+            logger.info("行情数据管理器已关闭")
 
         # TODO: 关闭数据库连接
         # TODO: 保存运行状态

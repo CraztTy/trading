@@ -12,14 +12,22 @@ from typing import AsyncGenerator
 pytest_plugins = ("pytest_asyncio",)
 
 
+# ==================== 测试环境配置 ====================
+
+import os
+# 设置测试模式环境变量
+os.environ["TESTING"] = "true"
+
+
 # ==================== HTTP Client Fixtures ====================
 
 @pytest.fixture
 def client():
-    """FastAPI测试客户端"""
+    """FastAPI测试客户端 - 同步模式"""
     from fastapi.testclient import TestClient
     from src.main import app
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 @pytest.fixture
