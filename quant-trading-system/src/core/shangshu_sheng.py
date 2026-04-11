@@ -490,20 +490,21 @@ class ShangshuSheng:
 
         try:
             # 1. 创建订单
+            import uuid
             order = Order(
+                order_id=f"ORD{uuid.uuid4().hex[:16].upper()}",
                 account_id=account_id,
                 symbol=signal.symbol,
                 direction=OrderDirection.BUY if signal.type == SignalType.BUY else OrderDirection.SELL,
-                order_type="MARKET",  # 简化处理
-                quantity=signal.volume or 100,
-                price=signal.price or Decimal("0"),
-                status=OrderStatus.PENDING
+                order_type=OrderType.MARKET,
+                qty=signal.volume or 100,
+                price=signal.price or Decimal("0")
             )
 
             # 2. 冻结资金
-            freeze_amount = order.price * order.quantity * Decimal("1.002")  # 预留费用
+            freeze_amount = order.price * order.qty * Decimal("1.002")  # 预留费用
             frozen = await self.capital_manager.freeze_for_order(
-                account_id, str(order.id), freeze_amount
+                account_id, order.order_id, freeze_amount
             )
 
             if not frozen:
@@ -517,7 +518,7 @@ class ShangshuSheng:
             if not result.success:
                 # 执行失败，解冻资金
                 await self.capital_manager.unfreeze_for_order(
-                    account_id, str(order.id), freeze_amount
+                    account_id, order.order_id, freeze_amount
                 )
                 self._stats["orders_rejected"] += 1
                 logger.warning(f"订单执行失败: {result.message}")
@@ -525,11 +526,11 @@ class ShangshuSheng:
 
             # 4. 创建成交记录
             trade = Trade(
-                order_id=order.id,
+                order_id=order.order_id,
                 account_id=account_id,
                 symbol=signal.symbol,
                 direction=order.direction,
-                quantity=result.filled_qty,
+                qty=result.filled_qty,
                 price=result.filled_price,
                 amount=result.filled_price * result.filled_qty,
                 commission=result.filled_amount * Decimal("0.0003") if hasattr(result, 'filled_amount') else Decimal("0"),
