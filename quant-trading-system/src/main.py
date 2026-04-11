@@ -24,6 +24,8 @@ import uvicorn
 from src.api.v1.router import router as api_v1_router
 from src.common.config import settings
 from src.common.logger import logger
+from src.market_data.manager import MarketDataManager
+from src.market_data.gateway.akshare import AKShareGateway
 
 
 @asynccontextmanager
@@ -49,6 +51,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     # 启动初始化
     try:
+        # 初始化行情数据管理器
+        logger.info("正在初始化行情数据管理器...")
+        market_manager = MarketDataManager()
+
+        # 注册 AKShare 网关
+        akshare_gateway = AKShareGateway()
+        market_manager.register_gateway("akshare", akshare_gateway)
+
+        # 启动行情数据服务
+        await market_manager.start()
+        logger.info("行情数据管理器启动完成")
+
         # TODO: 初始化数据库连接池
         # TODO: 加载策略配置
         # TODO: 启动监控服务
@@ -62,6 +76,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # 关闭清理
     logger.info("正在关闭应用...")
     try:
+        # 关闭行情数据管理器
+        market_manager = MarketDataManager()
+        await market_manager.stop()
+        logger.info("行情数据管理器已关闭")
+
         # TODO: 关闭数据库连接
         # TODO: 保存运行状态
         logger.info("应用已安全关闭")

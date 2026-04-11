@@ -5,8 +5,18 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import axios from 'axios'
+
+// API基础URL
+const API_BASE = 'http://localhost:9000/api/v1'
 
 // 数据类型定义
+
+export interface StockInfo {
+  symbol: string
+  name: string
+  code: string
+}
 export interface TickData {
   symbol: string
   timestamp: string
@@ -64,6 +74,10 @@ export const useMarketStore = defineStore('market', () => {
 
   // 活跃标的（当前订阅的）
   const activeSymbols = ref<Set<string>>(new Set())
+
+  // 搜索状态
+  const searchResults = ref<StockInfo[]>([])
+  const searchLoading = ref(false)
 
   // WebSocket实例
   let ws: WebSocket | null = null
@@ -339,6 +353,49 @@ export const useMarketStore = defineStore('market', () => {
       reconnectTimer = null
       connect()
     }, 5000)
+  }
+
+  // 搜索股票
+  async function searchStocks(keyword: string, limit: number = 10) {
+    if (!keyword.trim()) {
+      searchResults.value = []
+      return
+    }
+
+    searchLoading.value = true
+    try {
+      const response = await axios.get(`${API_BASE}/market/stocks/search`, {
+        params: { keyword, limit }
+      })
+      searchResults.value = response.data
+    } catch (error) {
+      console.error('[Market] Search stocks failed:', error)
+      searchResults.value = []
+    } finally {
+      searchLoading.value = false
+    }
+  }
+
+  // 获取历史K线
+  async function getKLineHistory(
+    symbol: string,
+    period: string = 'daily',
+    limit: number = 100
+  ): Promise<KLineData[]> {
+    try {
+      const response = await axios.get(`${API_BASE}/market/kline/${symbol}`, {
+        params: { period, limit }
+      })
+      return response.data
+    } catch (error) {
+      console.error('[Market] Get KLine history failed:', error)
+      return []
+    }
+  }
+
+  // 清空搜索结果
+  function clearSearchResults() {
+    searchResults.value = []
   }
 
   return {

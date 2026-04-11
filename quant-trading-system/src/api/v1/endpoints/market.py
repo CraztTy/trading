@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from src.models.base import get_db
 from src.market_data.manager import MarketDataManager
 from src.market_data.models import TickData, KLineData
+from src.market_data.gateway.akshare import AKShareGateway
 from src.common.logger import TradingLogger
 
 logger = TradingLogger(__name__)
@@ -108,9 +109,40 @@ async def get_kline_history(
         end: 结束时间 (ISO格式)
         limit: 最大返回条数
     """
-    # TODO: 从数据库查询历史K线
-    # 当前返回空列表，后续实现数据库查询
-    return []
+    # 使用 AKShare 获取历史K线数据
+    try:
+        akshare = AKShareGateway()
+
+        # 转换周期
+        period_map = {
+            '1m': '1min',  # AKShare 不支持 1m，需要特殊处理
+            '5m': '5min',
+            '15m': '15min',
+            '30m': '30min',
+            '1h': '60min',
+            '1d': 'daily',
+            '1w': 'weekly',
+            '1M': 'monthly',
+        }
+        ak_period = period_map.get(period, 'daily')
+
+        # 转换日期格式
+        start_date = start.strftime('%Y%m%d') if start else None
+        end_date = end.strftime('%Y%m%d') if end else None
+
+        klines = await akshare.get_kline_history(
+            symbol=symbol,
+            period=ak_period,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit
+        )
+
+        return [k.to_dict() for k in klines]
+
+    except Exception as e:
+        logger.error(f"获取K线数据失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取K线数据失败: {str(e)}")
 
 
 @router.get("/snapshot/{symbol}", response_model=MarketSnapshotResponse)
@@ -157,6 +189,52 @@ async def get_active_symbols(
     """获取当前活跃的标的列表"""
     manager = MarketDataManager()
     return list(manager.active_symbols)
+
+
+@router.get("/stocks/search", response_model=List[Dict[str, str]])
+async def search_stocks(
+    keyword: str = Query(..., description="搜索关键词"),
+    limit: int = Query(10, ge=1, le=100, description="返回条数")
+):
+    """
+    搜索股票
+
+    根据关键词搜索A股股票
+    """
+    try:
+        akshare = AKShareGateway()
+        stocks = await akshare.get_stock_list()
+
+        # 过滤匹配的股票
+        filtered = [
+            s for s in stocks
+            if keyword.upper() in s['symbol'] or keyword in s['name']
+        ]
+
+        return filtered[:limit]
+
+    except Exception as e:
+        logger.error(f"搜索股票失败: {e}")
+        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+
+
+@router.get("/stocks/list", response_model=List[Dict[str, str]])
+async def get_stock_list(
+    limit: int = Query(100, ge=1, le=1000, description="返回条数")
+):
+    """
+    获取A股股票列表
+
+    返回A股所有股票的基本信息
+    """
+    try:
+        akshare = AKShareGateway()
+        stocks = await akshare.get_stock_list()
+        return stocks[:limit]
+
+    except Exception as e:
+        logger.error(f"获取股票列表失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
 
 
 # ============ WebSocket API ============

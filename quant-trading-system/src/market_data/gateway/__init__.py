@@ -9,8 +9,10 @@
 
 from src.market_data.gateway.base import MarketDataGateway
 from src.market_data.gateway.eastmoney import EastmoneyGateway
+from src.market_data.gateway.akshare import AKShareGateway
 
 __all__ = [
     'MarketDataGateway',
     'EastmoneyGateway',
+    'AKShareGateway',
 ]
