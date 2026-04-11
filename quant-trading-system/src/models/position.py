@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, String, Numeric, DateTime, ForeignKey, Index, text, Integer, UniqueConstraint
+from sqlalchemy import BigInteger, String, Numeric, DateTime, ForeignKey, Index, text, Integer, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.base import Base
@@ -65,6 +65,12 @@ class Position(Base):
         UniqueConstraint("account_id", "symbol", name="uix_position_account_symbol"),
         Index("idx_position_account_symbol", "account_id", "symbol"),
         Index("idx_position_account", "account_id"),
+        # CHECK约束
+        CheckConstraint("total_qty >= 0", name="check_total_qty_non_negative"),
+        CheckConstraint("available_qty >= 0", name="check_available_qty_non_negative"),
+        CheckConstraint("frozen_qty >= 0", name="check_frozen_qty_non_negative"),
+        CheckConstraint("available_qty + frozen_qty <= total_qty", name="check_qty_consistency"),
+        CheckConstraint("cost_price >= 0", name="check_cost_price_non_negative"),
     )
 
     def __init__(
@@ -108,8 +114,7 @@ class Position(Base):
         else:
             # 加仓，计算新的平均成本
             total_cost = self.cost_amount + (price * qty)
-            self.total_qty += qty
-            self.cost_price = total_cost / self.total_qty
+            self.cost_price = total_cost / (self.total_qty + qty)
             self.cost_amount = total_cost
 
         self.total_qty += qty

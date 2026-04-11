@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import String, Numeric, DateTime, ForeignKey, Index, text
+from sqlalchemy import String, Numeric, DateTime, ForeignKey, Index, text, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.base import Base
@@ -93,6 +93,15 @@ class Account(Base):
     )
     settlements: Mapped[List["DailySettlement"]] = relationship(
         "DailySettlement", back_populates="account", lazy="selectin"
+    )
+
+    # 表级约束
+    __table_args__ = (
+        CheckConstraint("total_balance >= 0", name="check_total_balance_non_negative"),
+        CheckConstraint("available >= 0", name="check_available_non_negative"),
+        CheckConstraint("frozen >= 0", name="check_frozen_non_negative"),
+        CheckConstraint("available + frozen <= total_balance", name="check_balance_consistency"),
+        CheckConstraint("initial_capital > 0", name="check_initial_capital_positive"),
     )
 
     def __init__(

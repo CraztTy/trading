@@ -22,6 +22,7 @@ from src.models.position import Position
 from src.models.balance_flow import BalanceFlow, FlowType
 from src.models.enums import OrderDirection, OrderStatus
 from src.common.logger import TradingLogger
+from src.common.config import settings
 
 logger = TradingLogger(__name__)
 
@@ -68,12 +69,20 @@ class OrderEventHandler:
             )
             return True
 
-        except Exception as e:
-            logger.error(
-                f"订单提交处理失败: {e}",
+        except ValueError as e:
+            # 业务异常：资金不足、持仓不足等
+            logger.warning(
+                f"订单提交业务校验失败: {e}",
                 order_id=order.order_id
             )
             return False
+        except Exception as e:
+            # 系统异常：需要记录详细堆栈并可能上报
+            logger.exception(
+                f"订单提交系统异常: {e}",
+                order_id=order.order_id
+            )
+            raise  # 重新抛出，让上层处理
 
     async def on_fill(
         self,
@@ -119,12 +128,20 @@ class OrderEventHandler:
             )
             return True
 
-        except Exception as e:
-            logger.error(
-                f"订单成交处理失败: {e}",
+        except ValueError as e:
+            # 业务异常：资金不足、持仓不足等
+            logger.warning(
+                f"订单成交业务校验失败: {e}",
                 order_id=order.order_id
             )
             return False
+        except Exception as e:
+            # 系统异常：需要记录详细堆栈
+            logger.exception(
+                f"订单成交系统异常: {e}",
+                order_id=order.order_id
+            )
+            raise
 
     async def on_cancel(self, order: Order, transition: StateTransition) -> bool:
         """
@@ -152,12 +169,18 @@ class OrderEventHandler:
             )
             return True
 
-        except Exception as e:
-            logger.error(
-                f"订单撤单处理失败: {e}",
+        except ValueError as e:
+            logger.warning(
+                f"订单撤单业务校验失败: {e}",
                 order_id=order.order_id
             )
             return False
+        except Exception as e:
+            logger.exception(
+                f"订单撤单系统异常: {e}",
+                order_id=order.order_id
+            )
+            raise
 
     async def on_reject(self, order: Order, transition: StateTransition) -> bool:
         """
@@ -182,20 +205,26 @@ class OrderEventHandler:
             )
             return True
 
-        except Exception as e:
-            logger.error(
-                f"订单拒绝处理失败: {e}",
+        except ValueError as e:
+            logger.warning(
+                f"订单拒绝业务校验失败: {e}",
                 order_id=order.order_id
             )
             return False
+        except Exception as e:
+            logger.exception(
+                f"订单拒绝系统异常: {e}",
+                order_id=order.order_id
+            )
+            raise
 
     async def _freeze_cash_for_buy(self, order: Order) -> None:
-        """为买入订单冻结资金"""
+        """为买入订单冻结资金（带行锁）"""
         from sqlalchemy import select
 
-        # 获取账户
+        # 获取账户并加行锁，防止并发竞态条件
         result = await self.session.execute(
-            select(Account).where(Account.id == order.account_id)
+            select(Account).where(Account.id == order.account_id).with_for_update()
         )
         account = result.scalar_one_or_none()
 
@@ -232,15 +261,15 @@ class OrderEventHandler:
         )
 
     async def _freeze_position_for_sell(self, order: Order) -> None:
-        """为卖出订单冻结持仓"""
+        """为卖出订单冻结持仓（带行锁）"""
         from sqlalchemy import select
 
-        # 获取持仓
+        # 获取持仓并加行锁，防止并发竞态条件
         result = await self.session.execute(
             select(Position).where(
                 Position.account_id == order.account_id,
                 Position.symbol == order.symbol
-            )
+            ).with_for_update()
         )
         position = result.scalar_one_or_none()
 
@@ -271,12 +300,12 @@ class OrderEventHandler:
         fill_price: Decimal,
         fill_amount: Decimal
     ) -> None:
-        """处理买入成交"""
+        """处理买入成交（带行锁）"""
         from sqlalchemy import select
 
-        # 获取账户
+        # 获取账户并加行锁，防止并发竞态条件
         result = await self.session.execute(
-            select(Account).where(Account.id == order.account_id)
+            select(Account).where(Account.id == order.account_id).with_for_update()
         )
         account = result.scalar_one_or_none()
 
@@ -333,12 +362,12 @@ class OrderEventHandler:
         fill_price: Decimal,
         fill_amount: Decimal
     ) -> None:
-        """处理卖出成交"""
+        """处理卖出成交（带行锁）"""
         from sqlalchemy import select
 
-        # 获取账户和持仓
+        # 获取账户并加行锁，防止并发竞态条件
         result = await self.session.execute(
-            select(Account).where(Account.id == order.account_id)
+            select(Account).where(Account.id == order.account_id).with_for_update()
         )
         account = result.scalar_one_or_none()
 
@@ -349,7 +378,7 @@ class OrderEventHandler:
             select(Position).where(
                 Position.account_id == order.account_id,
                 Position.symbol == order.symbol
-            )
+            ).with_for_update()
         )
         position = result.scalar_one_or_none()
 
@@ -412,7 +441,7 @@ class OrderEventHandler:
             select(Position).where(
                 Position.account_id == order.account_id,
                 Position.symbol == order.symbol
-            )
+            ).with_for_update()
         )
         position = result.scalar_one_or_none()
 
@@ -420,7 +449,7 @@ class OrderEventHandler:
             # 加仓
             position.add(fill_qty, fill_price)
         else:
-            # 新建仓
+            # 新建仓（无需行锁，因为是新记录）
             position = Position(
                 account_id=order.account_id,
                 symbol=order.symbol,
@@ -434,14 +463,14 @@ class OrderEventHandler:
         order: Order,
         remaining_qty: int
     ) -> None:
-        """撤单时解冻资金"""
+        """撤单时解冻资金（带行锁）"""
         from sqlalchemy import select
 
         if remaining_qty <= 0:
             return
 
         result = await self.session.execute(
-            select(Account).where(Account.id == order.account_id)
+            select(Account).where(Account.id == order.account_id).with_for_update()
         )
         account = result.scalar_one_or_none()
 
@@ -474,7 +503,7 @@ class OrderEventHandler:
         order: Order,
         remaining_qty: int
     ) -> None:
-        """撤单时解冻持仓"""
+        """撤单时解冻持仓（带行锁）"""
         from sqlalchemy import select
 
         if remaining_qty <= 0:
@@ -484,7 +513,7 @@ class OrderEventHandler:
             select(Position).where(
                 Position.account_id == order.account_id,
                 Position.symbol == order.symbol
-            )
+            ).with_for_update()
         )
         position = result.scalar_one_or_none()
 
@@ -504,17 +533,27 @@ class OrderEventHandler:
         """
         计算交易费用
 
+        使用配置文件中的费率设置，支持动态调整。
+
         Returns:
             dict: 包含 commission, stamp_tax, transfer_fee, total_fee
         """
-        # 佣金（最低 5 元）
-        commission = max(amount * Decimal("0.0003"), Decimal("5"))
+        from decimal import Decimal
+
+        # 从配置读取费率
+        commission_rate = Decimal(str(settings.jince.commission_rate))
+        min_commission = Decimal(str(settings.jince.min_commission))
+        stamp_tax_rate = Decimal(str(settings.jince.stamp_tax_rate))
+        transfer_fee_rate = Decimal(str(settings.jince.transfer_fee_rate))
+
+        # 佣金（有最低收费）
+        commission = max(amount * commission_rate, min_commission)
 
         # 印花税（仅卖出）
-        stamp_tax = amount * Decimal("0.001") if direction == OrderDirection.SELL else Decimal("0")
+        stamp_tax = amount * stamp_tax_rate if direction == OrderDirection.SELL else Decimal("0")
 
         # 过户费
-        transfer_fee = amount * Decimal("0.00002")
+        transfer_fee = amount * transfer_fee_rate
 
         total_fee = commission + stamp_tax + transfer_fee
 

@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional, List
 
-from sqlalchemy import String, Numeric, DateTime, ForeignKey, Index, text, BigInteger, Integer
+from sqlalchemy import String, Numeric, DateTime, ForeignKey, Index, text, BigInteger, Integer, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.models.base import Base
@@ -66,6 +66,14 @@ class Order(Base):
 
     # 关系
     trades: Mapped[List["Trade"]] = relationship("Trade", back_populates="order", lazy="selectin")
+
+    # 表级约束
+    __table_args__ = (
+        CheckConstraint("qty > 0", name="check_qty_positive"),
+        CheckConstraint("price IS NULL OR price > 0", name="check_price_positive"),
+        CheckConstraint("filled_qty >= 0", name="check_filled_qty_non_negative"),
+        CheckConstraint("filled_qty <= qty", name="check_filled_qty_not_exceed"),
+    )
 
     def __init__(
         self,
