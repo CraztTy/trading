@@ -12,15 +12,16 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from sqlalchemy import select
-from src.models.base import init_db, close_db, AsyncSessionLocal
+from src.common.database import init_db, close_db, db_manager
+from src.common.config import settings
+from src.common.logger import logger
 from src.models.user import User
 from src.common.auth import get_password_hash
-from src.common.logger import logger
 
 
 async def create_superuser():
     """创建超级用户（如果不存在）"""
-    async with AsyncSessionLocal() as session:
+    async with db_manager.session_maker() as session:
         # 检查是否已存在超级用户
         result = await session.execute(
             select(User).where(User.username == "admin")
@@ -51,7 +52,7 @@ async def create_superuser():
 
 async def create_demo_user():
     """创建演示用户（可选）"""
-    async with AsyncSessionLocal() as session:
+    async with db_manager.session_maker() as session:
         # 检查是否已存在演示用户
         result = await session.execute(
             select(User).where(User.username == "demo")
@@ -97,7 +98,6 @@ async def main():
         await create_superuser()
 
         # 创建演示用户（仅在开发环境）
-        from src.common.config import settings
         if settings.app_env == "development":
             logger.info("正在创建演示用户...")
             await create_demo_user()

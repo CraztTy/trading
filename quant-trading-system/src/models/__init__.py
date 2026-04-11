@@ -3,7 +3,14 @@
 SQLAlchemy 2.0 声明式基类和模型导出
 """
 
-from src.models.base import Base, get_db, AsyncSessionLocal
+from src.models.base import (
+    Base,
+    get_db,
+    db_manager,
+    init_db,
+    close_db,
+    check_db_connection,
+)
 from src.models.enums import (
     AccountStatus,
     AccountType,
@@ -28,7 +35,10 @@ __all__ = [
     # 基础
     "Base",
     "get_db",
-    "AsyncSessionLocal",
+    "db_manager",
+    "init_db",
+    "close_db",
+    "check_db_connection",
     # 枚举
     "AccountStatus",
     "AccountType",

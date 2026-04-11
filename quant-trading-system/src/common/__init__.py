@@ -12,6 +12,14 @@ from .exceptions import (
     RiskControlError,
     OrderExecutionError,
 )
+from .database import (
+    Base,
+    get_db,
+    db_manager,
+    init_db,
+    close_db,
+    check_db_connection,
+)
 
 __all__ = [
     "Settings",
@@ -24,4 +32,10 @@ __all__ = [
     "StrategyError",
     "RiskControlError",
     "OrderExecutionError",
+    "Base",
+    "get_db",
+    "db_manager",
+    "init_db",
+    "close_db",
+    "check_db_connection",
 ]
