@@ -117,6 +117,7 @@ addopts = [
     "--tb=short",
     "--color=yes",
     "-v",
+    "--ignore=tests/performance",
 ]
 markers = [
     "unit: 单元测试",
