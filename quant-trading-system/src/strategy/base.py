@@ -421,6 +421,43 @@ class StrategyBase(ABC):
         """
         pass
 
+    async def on_bar_async(self, bar: BarData) -> Optional[Signal]:
+        """
+        异步K线数据触发（返回Signal版本）
+
+        用于中书省驱动策略信号生成
+
+        Args:
+            bar: K线数据
+
+        Returns:
+            Signal or None: 交易信号
+        """
+        # 默认调用同步版本（子类可重写）
+        self.on_bar(bar)
+
+        # 子类应该重写此方法返回Signal
+        # 示例:
+        # if self.should_buy(bar):
+        #     return Signal(type=SignalType.BUY, symbol=bar.symbol, ...)
+        return None
+
+    async def on_tick_async(self, tick: TickData) -> Optional[Signal]:
+        """
+        异步Tick数据触发（返回Signal版本）
+
+        用于中书省驱动策略信号生成
+
+        Args:
+            tick: Tick数据
+
+        Returns:
+            Signal or None: 交易信号
+        """
+        # 默认调用同步版本（子类可重写）
+        self.on_tick(tick)
+        return None
+
     def on_order_update(self, order: Dict[str, Any]) -> None:
         """
         订单状态更新
