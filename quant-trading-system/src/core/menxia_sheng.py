@@ -523,8 +523,8 @@ class MenxiaSheng:
         )
         self._log_audit(audit_result)
 
-        # 触发审核通过回调
-        self._notify_approval(signal, audit_result)
+        # 触发审核通过回调（等待完成）
+        await self._notify_approval(signal, audit_result)
 
         return audit_result
 
@@ -536,12 +536,13 @@ class MenxiaSheng:
         if len(self._audit_log) > self._max_log_size:
             self._audit_log = self._audit_log[-self._max_log_size:]
 
-    def _notify_approval(self, signal: Signal, result: AuditResult):
-        """通知审核通过"""
+    async def _notify_approval(self, signal: Signal, result: AuditResult):
+        """通知审核通过（异步等待所有回调完成）"""
+        import inspect
         for callback in self._approval_callbacks:
             try:
-                if asyncio.iscoroutinefunction(callback):
-                    asyncio.create_task(callback(signal, result))
+                if inspect.iscoroutinefunction(callback):
+                    await callback(signal, result)
                 else:
                     callback(signal, result)
             except Exception as e:

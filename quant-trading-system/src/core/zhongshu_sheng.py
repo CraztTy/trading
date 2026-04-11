@@ -60,8 +60,10 @@ class SignalEvent:
 
     @property
     def signal_id(self) -> str:
-        """生成唯一信号ID"""
-        content = f"{self.strategy_id}:{self.signal.symbol}:{self.signal.timestamp.isoformat()}:{self.signal.type.value}"
+        """生成唯一信号ID（基于信号内容而非时间戳，用于去重）"""
+        # 使用信号的关键属性生成ID，相同symbol/type/price的信号被认为是重复
+        price_str = str(self.signal.price) if self.signal.price else "0"
+        content = f"{self.strategy_id}:{self.signal.symbol}:{self.signal.type.value}:{price_str}"
         return hashlib.md5(content.encode()).hexdigest()[:16]
 
 
