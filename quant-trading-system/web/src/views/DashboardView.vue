@@ -63,72 +63,23 @@
     <!-- 主内容区 -->
     <div class="dashboard-main">
       <!-- 左侧：资产走势 -->
+      <!-- 左侧：K线图 -->
       <div class="main-panel chart-section">
-        <div class="panel-header">
-          <div class="header-left">
-            <span class="panel-icon">◫</span>
-            <h3 class="panel-title">账户资产</h3>
-            <span class="live-indicator">
-              <span class="live-dot"></span>
-              LIVE
-            </span>
-          </div>
-        </div>
-        <div class="panel-content">
-          <div v-if="accountStore.currentAccount" class="account-stats">
-            <div class="stat-row">
-              <div class="stat-item">
-                <span class="stat-label">初始资金</span>
-                <span class="stat-value">¥{{ formatMoney(accountStore.currentAccount.initial_capital) }}</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">当前净值</span>
-                <span class="stat-value positive">¥{{ formatMoney(accountStore.totalEquity) }}</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">总收益率</span>
-                <span class="stat-value" :class="accountStore.totalReturn >= 0 ? 'positive' : 'negative'">
-                  {{ accountStore.totalReturn >= 0 ? '+' : '' }}{{ accountStore.totalReturn.toFixed(2) }}%
-                </span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">可用资金</span>
-                <span class="stat-value">¥{{ formatMoney(accountStore.currentAccount?.available || 0) }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-else class="loading-text">加载中...</div>
-        </div>
+        <KLineChart :symbol="selectedSymbol" />
       </div>
 
       <!-- 右侧：实时订单 -->
       <div class="side-panel signals-section">
         <div class="panel-header">
           <span class="panel-icon">⚡</span>
-          <h3 class="panel-title">活跃订单</h3>
-          <span class="panel-badge">{{ orderStore.activeOrderCount }}</span>
+          <h3 class="panel-title">实时行情</h3>
+          <span class="live-indicator">
+            <span class="live-dot"></span>
+            LIVE
+          </span>
         </div>
         <div class="panel-content">
-          <div
-            v-for="order in orderStore.activeOrders.slice(0, 5)"
-            :key="order.order_id"
-            class="signal-item"
-            :class="order.direction.toLowerCase()"
-          >
-            <div class="signal-icon">{{ order.direction === 'BUY' ? '▲' : '▼' }}</div>
-            <div class="signal-info">
-              <span class="signal-symbol">{{ order.symbol }}</span>
-              <span class="signal-strategy">{{ order.status }}</span>
-            </div>
-            <div class="signal-price">
-              <span class="price-value">{{ order.price?.toFixed(2) || '市价' }}</span>
-              <span class="price-time">{{ order.filled_qty }}/{{ order.qty }}</span>
-            </div>
-            <button class="cancel-btn" @click="cancelOrder(order.order_id)">撤</button>
-          </div>
-          <div v-if="orderStore.activeOrders.length === 0" class="empty-text">
-            暂无活跃订单
-          </div>
+          <MarketTicker />
         </div>
       </div>
     </div>
@@ -262,6 +213,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useAccountStore, useOrderStore, useStrategyStore } from '@/stores'
+import MarketTicker from '@/components/market/MarketTicker.vue'
+import KLineChart from '@/components/market/KLineChart.vue'
 
 // Stores
 const accountStore = useAccountStore()
@@ -271,6 +224,7 @@ const strategyStore = useStrategyStore()
 // State
 const loading = ref(false)
 const showCreateOrder = ref(false)
+const selectedSymbol = ref('000001.SZ') // 当前选中的标的
 const newOrder = ref({
   symbol: '',
   symbol_name: '',
