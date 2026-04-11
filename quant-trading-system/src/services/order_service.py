@@ -98,7 +98,7 @@ class OrderService:
             "创建订单",
             order_id=order.order_id,
             symbol=symbol,
-            direction=direction.value,
+            direction=direction.value if hasattr(direction, 'value') else direction,
             qty=qty,
             price=float(price) if price else None
         )
@@ -133,7 +133,7 @@ class OrderService:
                 logger.info(
                     "订单提交成功",
                     order_id=order.order_id,
-                    status=order.status.value
+                    status=order.status.value if hasattr(order.status, 'value') else order.status
                 )
 
             return success
@@ -233,7 +233,7 @@ class OrderService:
                 logger.warning(
                     "订单不可撤",
                     order_id=order.order_id,
-                    status=order.status.value
+                    status=order.status.value if hasattr(order.status, 'value') else order.status
                 )
                 return False
 

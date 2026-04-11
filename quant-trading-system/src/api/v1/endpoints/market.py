@@ -15,8 +15,10 @@ from pydantic import BaseModel, Field
 
 from src.models.base import get_db
 from src.market_data.manager import MarketDataManager
+from src.market_data.data_service import data_service
 from src.market_data.models import TickData, KLineData
 from src.market_data.gateway.akshare import AKShareGateway
+from src.market_data.mock_provider import MockDataProvider
 from src.common.logger import TradingLogger
 
 logger = TradingLogger(__name__)
@@ -68,6 +70,13 @@ class MarketSnapshotResponse(BaseModel):
     timestamp: str
 
 
+class StockInfoResponse(BaseModel):
+    """股票信息响应"""
+    symbol: str
+    name: str
+    code: Optional[str] = None
+
+
 # ============ REST API ============
 
 @router.get("/tick/{symbol}", response_model=TickResponse)
@@ -81,8 +90,7 @@ async def get_latest_tick(
     Args:
         symbol: 标的代码 (如: 000001.SZ)
     """
-    manager = MarketDataManager()
-    tick = manager.get_latest_tick(symbol)
+    tick = await data_service.get_tick(symbol)
 
     if not tick:
         raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的行情数据")
@@ -93,7 +101,7 @@ async def get_latest_tick(
 @router.get("/kline/{symbol}", response_model=List[KLineResponse])
 async def get_kline_history(
     symbol: str,
-    period: str = Query("1d", description="周期: 1m, 5m, 15m, 30m, 1h, 1d, 1w, 1M"),
+    period: str = Query("daily", description="周期: daily, weekly, monthly"),
     start: Optional[datetime] = Query(None, description="开始时间"),
     end: Optional[datetime] = Query(None, description="结束时间"),
     limit: int = Query(100, ge=1, le=1000, description="返回条数"),
@@ -104,45 +112,24 @@ async def get_kline_history(
 
     Args:
         symbol: 标的代码
-        period: K线周期
+        period: K线周期 (daily/weekly/monthly)
         start: 开始时间 (ISO格式)
         end: 结束时间 (ISO格式)
         limit: 最大返回条数
     """
-    # 使用 AKShare 获取历史K线数据
-    try:
-        akshare = AKShareGateway()
+    # 转换日期格式
+    start_date = start.strftime('%Y%m%d') if start else None
+    end_date = end.strftime('%Y%m%d') if end else None
 
-        # 转换周期
-        period_map = {
-            '1m': '1min',  # AKShare 不支持 1m，需要特殊处理
-            '5m': '5min',
-            '15m': '15min',
-            '30m': '30min',
-            '1h': '60min',
-            '1d': 'daily',
-            '1w': 'weekly',
-            '1M': 'monthly',
-        }
-        ak_period = period_map.get(period, 'daily')
+    klines = await data_service.get_kline(
+        symbol=symbol,
+        period=period,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit
+    )
 
-        # 转换日期格式
-        start_date = start.strftime('%Y%m%d') if start else None
-        end_date = end.strftime('%Y%m%d') if end else None
-
-        klines = await akshare.get_kline_history(
-            symbol=symbol,
-            period=ak_period,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit
-        )
-
-        return [k.to_dict() for k in klines]
-
-    except Exception as e:
-        logger.error(f"获取K线数据失败: {e}")
-        raise HTTPException(status_code=500, detail=f"获取K线数据失败: {str(e)}")
+    return [k.to_dict() for k in klines]
 
 
 @router.get("/snapshot/{symbol}", response_model=MarketSnapshotResponse)
@@ -155,8 +142,7 @@ async def get_market_snapshot(
 
     包含完整的市场数据：价格、成交量、买卖盘等
     """
-    manager = MarketDataManager()
-    tick = manager.get_latest_tick(symbol)
+    tick = await data_service.get_tick(symbol)
 
     if not tick:
         raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的快照数据")
@@ -191,7 +177,7 @@ async def get_active_symbols(
     return list(manager.active_symbols)
 
 
-@router.get("/stocks/search", response_model=List[Dict[str, str]])
+@router.get("/stocks/search", response_model=List[StockInfoResponse])
 async def search_stocks(
     keyword: str = Query(..., description="搜索关键词"),
     limit: int = Query(10, ge=1, le=100, description="返回条数")
@@ -201,24 +187,11 @@ async def search_stocks(
 
     根据关键词搜索A股股票
     """
-    try:
-        akshare = AKShareGateway()
-        stocks = await akshare.get_stock_list()
-
-        # 过滤匹配的股票
-        filtered = [
-            s for s in stocks
-            if keyword.upper() in s['symbol'] or keyword in s['name']
-        ]
-
-        return filtered[:limit]
-
-    except Exception as e:
-        logger.error(f"搜索股票失败: {e}")
-        raise HTTPException(status_code=500, detail=f"搜索失败: {str(e)}")
+    results = await data_service.search_stocks(keyword, limit)
+    return results
 
 
-@router.get("/stocks/list", response_model=List[Dict[str, str]])
+@router.get("/stocks/list", response_model=List[StockInfoResponse])
 async def get_stock_list(
     limit: int = Query(100, ge=1, le=1000, description="返回条数")
 ):
@@ -227,14 +200,42 @@ async def get_stock_list(
 
     返回A股所有股票的基本信息
     """
-    try:
-        akshare = AKShareGateway()
-        stocks = await akshare.get_stock_list()
-        return stocks[:limit]
+    stocks = await data_service.get_stock_list(limit=limit)
+    return stocks
 
-    except Exception as e:
-        logger.error(f"获取股票列表失败: {e}")
-        raise HTTPException(status_code=500, detail=f"获取失败: {str(e)}")
+
+@router.get("/batch/ticks")
+async def get_batch_ticks(
+    symbols: str = Query(..., description="标的代码，逗号分隔，如: 000001.SZ,600519.SH"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    批量获取Tick数据
+
+    Args:
+        symbols: 逗号分隔的标的代码
+    """
+    symbol_list = [s.strip() for s in symbols.split(",")]
+    results = await data_service.get_batch_ticks(symbol_list)
+
+    return {
+        "data": {symbol: tick.to_dict() for symbol, tick in results.items()},
+        "count": len(results),
+        "requested": len(symbol_list)
+    }
+
+
+@router.get("/service/status")
+async def get_data_service_status():
+    """获取数据服务状态"""
+    return data_service.get_cache_stats()
+
+
+@router.post("/service/clear-cache")
+async def clear_data_cache():
+    """清除数据缓存"""
+    data_service.clear_cache()
+    return {"message": "缓存已清除"}
 
 
 # ============ WebSocket API ============
@@ -298,71 +299,6 @@ async def market_websocket(websocket: WebSocket):
     行情WebSocket接口
 
     提供实时行情数据推送服务
-
-    ## 连接
-    ```
-    ws://localhost:9000/api/v1/market/ws
-    ```
-
-    ## 消息格式
-
-    ### 客户端 → 服务器
-
-    **订阅标的:**
-    ```json
-    {
-        "action": "subscribe",
-        "symbols": ["000001.SZ", "600519.SH"],
-        "data_types": ["tick", "kline_1m"]
-    }
-    ```
-
-    **取消订阅:**
-    ```json
-    {
-        "action": "unsubscribe",
-        "symbols": ["000001.SZ"]
-    }
-    ```
-
-    ### 服务器 → 客户端
-
-    **连接成功:**
-    ```json
-    {
-        "type": "connected",
-        "message": "行情WebSocket连接成功"
-    }
-    ```
-
-    **Tick数据:**
-    ```json
-    {
-        "type": "tick",
-        "data": {
-            "symbol": "000001.SZ",
-            "price": 10.50,
-            "volume": 1500,
-            "timestamp": "2024-01-15T09:30:00.000Z"
-        }
-    }
-    ```
-
-    **K线数据:**
-    ```json
-    {
-        "type": "kline_1m",
-        "data": {
-            "symbol": "000001.SZ",
-            "open": 10.00,
-            "high": 10.50,
-            "low": 9.90,
-            "close": 10.30,
-            "volume": 10000,
-            "period": "1m"
-        }
-    }
-    ```
     """
     await websocket.accept()
 

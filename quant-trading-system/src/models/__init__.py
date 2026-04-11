@@ -22,6 +22,7 @@ from src.models.position import Position
 from src.models.balance_flow import BalanceFlow
 from src.models.daily_settlement import DailySettlement
 from src.models.market_data import MarketDataSnapshot
+from src.models.user import User
 
 __all__ = [
     # 基础
@@ -46,4 +47,5 @@ __all__ = [
     "BalanceFlow",
     "DailySettlement",
     "MarketDataSnapshot",
+    "User",
 ]

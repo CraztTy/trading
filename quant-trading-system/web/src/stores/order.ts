@@ -1,115 +1,213 @@
 /**
- * 订单状态管理
+ * 订单状态管理 (Pinia)
  */
-import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { orderApi, type Order, type CreateOrderRequest } from '@/api'
+import { defineStore } from 'pinia'
+import { ElMessage } from 'element-plus'
+import {
+  createOrder as createOrderApi,
+  getOrders as getOrdersApi,
+  getOrderDetail as getOrderDetailApi,
+  cancelOrder as cancelOrderApi,
+  getActiveOrders as getActiveOrdersApi,
+  cancelAllOrders as cancelAllOrdersApi,
+  fillOrder as fillOrderApi,
+  getOrderBook as getOrderBookApi,
+  type Order,
+  type CreateOrderRequest,
+  type OrderBook,
+  OrderDirection,
+  OrderType,
+  OrderStatus
+} from '@/api/order'
+
+export { OrderDirection, OrderType, OrderStatus }
 
 export const useOrderStore = defineStore('order', () => {
-  // State
+  // ============ State ============
   const orders = ref<Order[]>([])
   const activeOrders = ref<Order[]>([])
+  const currentOrder = ref<Order | null>(null)
+  const orderBook = ref<OrderBook | null>(null)
   const loading = ref(false)
-  const error = ref<string | null>(null)
+  const submitting = ref(false)
 
-  // Getters
-  const orderCount = computed(() => orders.value.length)
-
-  const activeOrderCount = computed(() => activeOrders.value.length)
+  // ============ Getters ============
+  const pendingOrders = computed(() =>
+    orders.value.filter(o => o.status === OrderStatus.PENDING || o.status === OrderStatus.CREATED)
+  )
 
   const filledOrders = computed(() =>
-    orders.value.filter(o => o.status === 'FILLED')
+    orders.value.filter(o => o.status === OrderStatus.FILLED)
   )
 
-  const pendingOrders = computed(() =>
-    orders.value.filter(o => ['CREATED', 'PENDING', 'PARTIAL'].includes(o.status))
+  const cancelledOrders = computed(() =>
+    orders.value.filter(o => o.status === OrderStatus.CANCELLED || o.status === OrderStatus.REJECTED)
   )
 
-  // Actions
-  async function fetchOrders(accountId: number, status?: string) {
-    loading.value = true
-    error.value = null
+  const totalOrderCount = computed(() => orders.value.length)
+
+  // ============ Actions ============
+
+  /**
+   * 创建订单
+   */
+  const submitOrder = async (data: CreateOrderRequest): Promise<boolean> => {
+    submitting.value = true
     try {
-      const data = await orderApi.getOrders(accountId, status)
+      const order = await createOrderApi(data)
+      orders.value.unshift(order)
+      ElMessage.success(`订单创建成功: ${order.order_id}`)
+      return true
+    } catch (error: any) {
+      const message = error.response?.data?.detail || '订单创建失败'
+      ElMessage.error(message)
+      return false
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  /**
+   * 加载订单列表
+   */
+  const loadOrders = async (params?: {
+    account_id?: number
+    status?: OrderStatus
+    limit?: number
+    offset?: number
+  }) => {
+    loading.value = true
+    try {
+      const data = await getOrdersApi(params)
       orders.value = data
-    } catch (err: any) {
-      error.value = err.message
-      console.error('获取订单失败:', err)
+    } catch (error: any) {
+      console.error('加载订单失败:', error)
     } finally {
       loading.value = false
     }
   }
 
-  async function fetchActiveOrders(accountId: number) {
-    loading.value = true
-    error.value = null
+  /**
+   * 加载订单详情
+   */
+  const loadOrderDetail = async (orderId: string) => {
     try {
-      const data = await orderApi.getActiveOrders(accountId)
+      const data = await getOrderDetailApi(orderId)
+      currentOrder.value = data
+      return data
+    } catch (error: any) {
+      ElMessage.error('加载订单详情失败')
+      return null
+    }
+  }
+
+  /**
+   * 撤销订单
+   */
+  const cancelOrderById = async (orderId: string): Promise<boolean> => {
+    try {
+      await cancelOrderApi(orderId)
+      // 更新本地订单状态
+      const order = orders.value.find(o => o.order_id === orderId)
+      if (order) {
+        order.status = OrderStatus.CANCELLED
+      }
+      ElMessage.success('撤单成功')
+      return true
+    } catch (error: any) {
+      const message = error.response?.data?.detail || '撤单失败'
+      ElMessage.error(message)
+      return false
+    }
+  }
+
+  /**
+   * 加载活跃订单
+   */
+  const loadActiveOrders = async (accountId: number) => {
+    try {
+      const data = await getActiveOrdersApi(accountId)
       activeOrders.value = data
-    } catch (err: any) {
-      error.value = err.message
-      console.error('获取活跃订单失败:', err)
-    } finally {
-      loading.value = false
+    } catch (error: any) {
+      console.error('加载活跃订单失败:', error)
     }
   }
 
-  async function createOrder(data: CreateOrderRequest) {
-    loading.value = true
-    error.value = null
+  /**
+   * 批量撤单
+   */
+  const cancelAll = async (accountId: number): Promise<boolean> => {
     try {
-      const newOrder = await orderApi.createOrder(data)
-      orders.value.unshift(newOrder)
-      return newOrder
-    } catch (err: any) {
-      error.value = err.message
-      console.error('创建订单失败:', err)
-      throw err
-    } finally {
-      loading.value = false
+      const result = await cancelAllOrdersApi(accountId)
+      await loadOrders({ account_id: accountId })
+      ElMessage.success(`成功撤销 ${result.cancelled_count} 个订单`)
+      return true
+    } catch (error: any) {
+      ElMessage.error('批量撤单失败')
+      return false
     }
   }
 
-  async function cancelOrder(orderId: string) {
-    loading.value = true
-    error.value = null
+  /**
+   * 模拟订单成交（测试用）
+   */
+  const simulateFill = async (orderId: string, fillQty: number, fillPrice: number): Promise<boolean> => {
     try {
-      const updatedOrder = await orderApi.cancelOrder(orderId)
-      // 更新本地订单列表
-      const index = orders.value.findIndex(o => o.order_id === orderId)
-      if (index !== -1) {
-        orders.value[index] = updatedOrder
-      }
-      // 从活跃订单中移除
-      const activeIndex = activeOrders.value.findIndex(o => o.order_id === orderId)
-      if (activeIndex !== -1) {
-        activeOrders.value.splice(activeIndex, 1)
-      }
-      return updatedOrder
-    } catch (err: any) {
-      error.value = err.message
-      console.error('撤单失败:', err)
-      throw err
-    } finally {
-      loading.value = false
+      await fillOrderApi(orderId, fillQty, fillPrice)
+      await loadOrderDetail(orderId)
+      ElMessage.success('成交模拟成功')
+      return true
+    } catch (error: any) {
+      ElMessage.error('成交模拟失败')
+      return false
     }
+  }
+
+  /**
+   * 加载订单簿
+   */
+  const loadOrderBook = async (symbol: string) => {
+    try {
+      const data = await getOrderBookApi(symbol)
+      orderBook.value = data
+    } catch (error: any) {
+      console.error('加载订单簿失败:', error)
+    }
+  }
+
+  /**
+   * 清空订单数据
+   */
+  const clearOrders = () => {
+    orders.value = []
+    activeOrders.value = []
+    currentOrder.value = null
+    orderBook.value = null
   }
 
   return {
     // State
     orders,
     activeOrders,
+    currentOrder,
+    orderBook,
     loading,
-    error,
+    submitting,
     // Getters
-    orderCount,
-    activeOrderCount,
-    filledOrders,
     pendingOrders,
+    filledOrders,
+    cancelledOrders,
+    totalOrderCount,
     // Actions
-    fetchOrders,
-    fetchActiveOrders,
-    createOrder,
-    cancelOrder
+    submitOrder,
+    loadOrders,
+    loadOrderDetail,
+    cancelOrderById,
+    loadActiveOrders,
+    cancelAll,
+    simulateFill,
+    loadOrderBook,
+    clearOrders
   }
 })

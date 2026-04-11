@@ -256,14 +256,14 @@ class RiskManager:
                     result.symbol,
                     reason=f"止损触发: {result.reason}"
                 )
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"止损平仓失败: {e}")
 
         # 触发外部回调
         for callback in self._reject_callbacks:
             try:
                 callback(result.symbol, f"止损: {result.reason}")
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"止损回调失败: {e}")
 
     def _on_take_profit_triggered(self, result: TakeProfitResult) -> None:
@@ -280,7 +280,7 @@ class RiskManager:
                     result.symbol,
                     reason=f"止盈触发: {result.reason}"
                 )
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"止盈平仓失败: {e}")
         elif self._strategy and result.partial_qty:
             # 分批止盈
@@ -291,7 +291,7 @@ class RiskManager:
                     price=result.target_price,
                     reason=f"分批止盈 {result.level}"
                 )
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"分批止盈失败: {e}")
 
     def _on_position_warning(self, warnings: List[Dict]) -> None:
@@ -317,7 +317,7 @@ class RiskManager:
             "position": position_report,
             "stop_loss": {
                 symbol: {
-                    "stop_price": float(order.stop_price) if order.stop_price else None,
+                    "stop_price": str(order.stop_price) if order.stop_price else None,
                     "type": order.stop_loss_type.value,
                     "is_active": order.is_active
                 }
@@ -325,7 +325,7 @@ class RiskManager:
             },
             "take_profit": {
                 symbol: {
-                    "target_price": float(order.target_price) if order.target_price else None,
+                    "target_price": str(order.target_price) if order.target_price else None,
                     "type": order.take_profit_type.value,
                     "is_active": order.is_active
                 }

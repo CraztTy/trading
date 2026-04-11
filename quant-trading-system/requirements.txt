@@ -23,6 +23,7 @@ ta-lib==0.4.28
 # 金融数据源
 akshare>=1.10.0
 tushare>=1.2.0
+baostock>=0.8.9
 
 # 缓存与限流
 aiocache>=0.12.0

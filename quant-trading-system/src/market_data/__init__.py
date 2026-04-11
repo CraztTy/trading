@@ -6,6 +6,7 @@
 
 from src.market_data.models import TickData, KLineData, MarketDepth, MarketSnapshot
 from src.market_data.manager import MarketDataManager
+from src.market_data.data_service import DataService, data_service
 from src.market_data.gateway.base import MarketDataGateway
 from src.market_data.transformer import (
     DataTransformer, CodeNormalizer, FieldMapper,
@@ -28,6 +29,8 @@ __all__ = [
     'MarketSnapshot',
     # 核心组件
     'MarketDataManager',
+    'DataService',
+    'data_service',
     'MarketDataGateway',
     # 数据转换
     'DataTransformer',

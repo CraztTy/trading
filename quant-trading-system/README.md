@@ -200,6 +200,15 @@ make restore
 ### 文档管理
 - **架构设计**: `docs/architecture/`
 - **API文档**: `docs/api/`
+  - [概览](docs/api/README.md)
+  - [市场数据](docs/api/market_data.md)
+  - [订单执行](docs/api/execution.md)
+  - [策略管理](docs/api/strategy.md)
+  - [资金管理](docs/api/finance.md)
+  - [风险控制](docs/api/risk.md)
+  - [报告系统](docs/api/reports.md)
+  - [智能选股](docs/api/intelligence.md)
+  - [WebSocket](docs/api/websocket.md)
 - **运维手册**: `docs/operations/`
 - **合规文档**: `docs/compliance/`
 

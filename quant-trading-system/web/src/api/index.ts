@@ -1,7 +1,8 @@
 /**
- * API 模块入口
+ * API接口统一导出
  */
 export { default as apiClient } from './client'
-export * from './account'
+export * from './market'
 export * from './order'
-export * from './strategy'
+export * from './position'
+export * from './auth'

@@ -25,6 +25,7 @@ from src.api.v1.router import router as api_v1_router
 from src.common.config import settings
 from src.common.logger import logger
 from src.market_data.manager import MarketDataManager
+from src.market_data.data_service import data_service
 from src.market_data.gateway.akshare import AKShareGateway
 
 
@@ -57,6 +58,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # 启动初始化
     try:
         if not is_testing:
+            # 初始化数据服务
+            logger.info("正在初始化数据服务...")
+            await data_service.initialize()
+
             # 初始化行情数据管理器
             logger.info("正在初始化行情数据管理器...")
             market_manager = MarketDataManager()
@@ -71,9 +76,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         else:
             logger.info("测试模式: 跳过行情数据管理器启动")
 
-        # TODO: 初始化数据库连接池
-        # TODO: 加载策略配置
-        # TODO: 启动监控服务
         logger.info("应用初始化完成")
     except Exception as e:
         logger.error(f"初始化失败: {e}")
