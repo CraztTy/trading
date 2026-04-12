@@ -23,9 +23,9 @@
           class="nl-input"
           @keyup.enter="runScreening"
         />
-        <button class="search-btn" @click="runScreening">
-          <el-icon><Search /></el-icon>
-          <span>智能筛选</span>
+        <button class="search-btn" @click="runScreening" :disabled="loading">
+          <el-icon><Loading v-if="loading" /><Search v-else /></el-icon>
+          <span>{{ loading ? '筛选中...' : '智能筛选' }}</span>
         </button>
       </div>
 
@@ -92,7 +92,8 @@
     <div class="results-section">
       <div class="results-header">
         <div class="results-count">
-          找到 <span class="count">{{ screenedStocks.length }}</span> 只股票
+          找到 <span class="count">{{ totalCount }}</span> 只股票
+          <span v-if="executionTime > 0" class="execution-time">({{ executionTime.toFixed(1) }}ms)</span>
         </div>
         <div class="results-actions">
           <el-radio-group v-model="sortBy" size="small">
@@ -127,28 +128,25 @@
           <div class="stock-metrics">
             <div class="metric">
               <span class="metric-label">市盈率</span>
-              <span class="metric-value">{{ stock.pe }}x</span>
+              <span class="metric-value">{{ stock.pe_ttm?.toFixed(1) || '-' }}x</span>
             </div>
             <div class="metric">
               <span class="metric-label">市净率</span>
-              <span class="metric-value">{{ stock.pb }}x</span>
+              <span class="metric-value">{{ stock.pb?.toFixed(1) || '-' }}x</span>
             </div>
             <div class="metric">
               <span class="metric-label">ROE</span>
-              <span class="metric-value">{{ stock.roe }}%</span>
+              <span class="metric-value">{{ stock.roe ? (stock.roe * 100).toFixed(1) : '-' }}%</span>
             </div>
             <div class="metric">
               <span class="metric-label">市值</span>
-              <span class="metric-value">{{ formatMarketCap(stock.marketCap) }}</span>
+              <span class="metric-value">{{ formatMarketCap(stock.market_cap ? stock.market_cap / 100000000 : 0) }}</span>
             </div>
           </div>
 
           <div class="stock-price">
-            <span class="price" :class="stock.change >= 0 ? 'up' : 'down'">
-              ¥{{ stock.price.toFixed(2) }}
-            </span>
-            <span class="change" :class="stock.change >= 0 ? 'up' : 'down'">
-              {{ stock.change >= 0 ? '+' : '' }}{{ stock.changePct.toFixed(2) }}%
+            <span class="price">
+              {{ stock.price ? '¥' + stock.price.toFixed(2) : '-' }}
             </span>
           </div>
 
@@ -164,7 +162,7 @@
 
           <div class="ai-reason">
             <el-icon><InfoFilled /></el-icon>
-            <span>{{ stock.aiReason }}</span>
+            <span>{{ stock.industry || '优质标的' }}，综合评分 {{ stock.score }}</span>
           </div>
         </div>
       </div>
@@ -173,12 +171,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { Search, Microphone, Plus, InfoFilled } from '@element-plus/icons-vue'
+import { ref, computed } from 'vue'
+import { Search, Microphone, Plus, InfoFilled, Loading } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { intelligenceApi, type ScreenResult } from '@/api/intelligence'
 
 const nlQuery = ref('')
 const sortBy = ref('score')
+const loading = ref(false)
 
 const filters = ref({
   pe: [0, 30],
@@ -190,106 +190,61 @@ const filters = ref({
 })
 
 const quickFilters = [
-  { id: 1, name: '低估值蓝筹', query: '市盈率低于15的蓝筹股' },
-  { id: 2, name: '高成长科技', query: '净利润增长超过30%的科技股' },
-  { id: 3, name: '高分红', query: '股息率超过3%的股票' },
-  { id: 4, name: '小盘成长', query: '市值小于200亿的高成长股' },
-  { id: 5, name: '行业龙头', query: '各行业市值最大的龙头股' }
+  { id: 1, name: '低估值蓝筹', params: { pe_max: 15, roe_min: 0.1, sort_by: 'pe', sort_order: 'asc' } },
+  { id: 2, name: '高成长科技', params: { profit_growth_min: 0.3, revenue_growth_min: 0.3 } },
+  { id: 3, name: '高分红', params: { industries: ['电力', '银行', '交通运输'] } },
+  { id: 4, name: '小盘成长', params: { market_cap_max: 200, profit_growth_min: 0.3 } },
+  { id: 5, name: '行业龙头', params: { market_cap_min: 1000 } }
 ]
 
-const screenedStocks = ref([
-  {
-    symbol: '002371.SZ',
-    name: '北方华创',
-    score: 92,
-    tags: ['半导体', '设备龙头', '国产替代'],
-    pe: 28.5,
-    pb: 4.2,
-    roe: 18.5,
-    marketCap: 1850,
-    price: 245.80,
-    change: 5.2,
-    changePct: 2.16,
-    aiReason: '半导体设备龙头，受益于国产替代趋势，业绩持续高增长'
-  },
-  {
-    symbol: '300760.SZ',
-    name: '迈瑞医疗',
-    score: 88,
-    tags: ['医疗器械', '龙头', '创新'],
-    pe: 32.1,
-    pb: 8.5,
-    roe: 28.3,
-    marketCap: 3800,
-    price: 312.50,
-    change: 3.8,
-    changePct: 1.23,
-    aiReason: '医疗器械龙头，研发实力强，海外业务快速增长'
-  },
-  {
-    symbol: '600900.SH',
-    name: '长江电力',
-    score: 85,
-    tags: ['电力', '高分红', '稳健'],
-    pe: 18.2,
-    pb: 2.1,
-    roe: 14.2,
-    marketCap: 5200,
-    price: 23.15,
-    change: 0.25,
-    changePct: 1.09,
-    aiReason: '水电龙头，现金流稳定，股息率超过4%，适合稳健投资'
-  },
-  {
-    symbol: '000333.SZ',
-    name: '美的集团',
-    score: 83,
-    tags: ['家电', '龙头', '全球化'],
-    pe: 12.5,
-    pb: 2.8,
-    roe: 22.1,
-    marketCap: 4200,
-    price: 59.80,
-    change: 0.85,
-    changePct: 1.44,
-    aiReason: '家电龙头，估值合理，海外业务占比持续提升'
-  },
-  {
-    symbol: '002594.SZ',
-    name: '比亚迪',
-    score: 81,
-    tags: ['新能源', '汽车', '电池'],
-    pe: 35.2,
-    pb: 5.8,
-    roe: 16.8,
-    marketCap: 6800,
-    price: 245.60,
-    change: -2.40,
-    changePct: -0.97,
-    aiReason: '新能源汽车龙头，垂直一体化优势，销量持续增长'
-  },
-  {
-    symbol: '601012.SH',
-    name: '隆基绿能',
-    score: 79,
-    tags: ['光伏', '硅片', '新能源'],
-    pe: 15.8,
-    pb: 2.5,
-    roe: 20.5,
-    marketCap: 2100,
-    price: 27.65,
-    change: 1.25,
-    changePct: 4.73,
-    aiReason: '光伏硅片龙头，成本优势明显，受益于全球能源转型'
-  }
-])
+const screenedStocks = ref<ScreenResult[]>([])
+const totalCount = ref(0)
+const executionTime = ref(0)
 
-const runScreening = () => {
-  ElMessage.success('正在运行AI选股算法...')
+const runScreening = async () => {
+  loading.value = true
+  try {
+    const params = {
+      pe_min: filters.value.pe[0] > 0 ? filters.value.pe[0] : undefined,
+      pe_max: filters.value.pe[1] < 100 ? filters.value.pe[1] : undefined,
+      pb_min: filters.value.pb[0] > 0 ? filters.value.pb[0] : undefined,
+      pb_max: filters.value.pb[1] < 10 ? filters.value.pb[1] : undefined,
+      roe_min: filters.value.roe[0] > 0 ? filters.value.roe[0] / 100 : undefined,
+      profit_growth_min: filters.value.profitGrowth[0] > 0 ? filters.value.profitGrowth[0] / 100 : undefined,
+      market_cap_min: filters.value.marketCap[0] > 0 ? filters.value.marketCap[0] : undefined,
+      market_cap_max: filters.value.marketCap[1] < 10000 ? filters.value.marketCap[1] : undefined,
+      sort_by: sortBy.value,
+      limit: 50
+    }
+
+    const res = await intelligenceApi.screenStocks(params)
+    screenedStocks.value = res.data.stocks.map(s => ({
+      ...s,
+      score: Math.round((s.roe || 0) * 100 + (s.pe_ttm ? 100 - s.pe_ttm : 50)),
+      tags: [s.industry || '股票'],
+      price: s.price || 100,
+      change: 0,
+      changePct: 0
+    }))
+    totalCount.value = res.data.filtered_count
+    executionTime.value = res.data.execution_time_ms
+    ElMessage.success(`筛选完成，找到 ${res.data.filtered_count} 只股票`)
+  } catch (e) {
+    console.error(e)
+    ElMessage.error('选股失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 const applyFilter = (filter: any) => {
-  nlQuery.value = filter.query
+  // 应用快捷筛选参数
+  const params = filter.params
+  if (params.pe_max) filters.value.pe = [0, params.pe_max]
+  if (params.roe_min) filters.value.roe = [params.roe_min * 100, 50]
+  if (params.market_cap_max) filters.value.marketCap = [0, params.market_cap_max]
+  if (params.market_cap_min) filters.value.marketCap = [params.market_cap_min, 10000]
+
   runScreening()
 }
 
@@ -521,6 +476,12 @@ const viewDetail = (stock: any) => {
       font-size: var(--text-xl);
       font-weight: 700;
       color: var(--accent-gold);
+    }
+
+    .execution-time {
+      font-size: var(--text-xs);
+      color: var(--text-muted);
+      margin-left: var(--space-2);
     }
   }
 }
