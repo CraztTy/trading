@@ -64,6 +64,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '策略回测', requiresAuth: true }
   },
   {
+    path: '/live',
+    name: 'Live',
+    component: () => import('@/views/LiveView.vue'),
+    meta: { title: '实盘监控', requiresAuth: true }
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('@/views/SettingsView.vue'),

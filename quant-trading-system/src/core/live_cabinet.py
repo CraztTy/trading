@@ -7,6 +7,7 @@
 - 实时风控监控
 - 虚拟资金池管理
 - 信号推送和告警
+- 自动/手动/模拟交易模式切换
 """
 from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime
@@ -16,6 +17,8 @@ from src.core.crown_prince import CrownPrince
 from src.core.zhongshu_sheng import ZhongshuSheng
 from src.core.menxia_sheng import MenxiaSheng
 from src.core.shangshu_sheng import ShangshuSheng
+from src.core.auto_trader import auto_trader, TradeMode
+from src.core.signal_publisher import signal_publisher, SignalEvent
 
 logger = TradingLogger(__name__)
 
@@ -47,6 +50,12 @@ class LiveCabinet:
         self.on_signal: Optional[Callable] = None
         self.on_trade: Optional[Callable] = None
         self.on_error: Optional[Callable] = None
+
+        # 交易模式
+        self.trade_mode = TradeMode.MANUAL
+
+        # 订阅信号
+        signal_publisher.subscribe(self._on_signal)
 
     def set_data_provider(self, provider):
         """设置数据提供者"""
@@ -268,3 +277,61 @@ class LiveCabinet:
         if strategy_id in self.active_strategies:
             self.active_strategies.remove(strategy_id)
             logger.info(f"移除策略: {strategy_id}")
+
+    async def _on_signal(self, event: SignalEvent):
+        """处理信号"""
+        # 调用自动交易器处理
+        result = await auto_trader.process_signal(event)
+
+        if result.simulated:
+            logger.info(f"模拟交易: {event.symbol} {event.signal_type}")
+        elif result.success:
+            logger.info(f"自动下单: {event.symbol} {event.signal_type}")
+        else:
+            logger.info(f"信号处理: {result.message}")
+
+    def set_trade_mode(self, mode: str):
+        """设置交易模式"""
+        trade_mode = TradeMode(mode)
+        auto_trader.set_mode(trade_mode)
+        self.trade_mode = trade_mode
+        logger.info(f"实盘交易模式已切换: {mode}")
+
+    def get_trade_mode(self) -> str:
+        """获取当前交易模式"""
+        return self.trade_mode.value
+
+    def confirm_signal(self, signal_id: str) -> dict:
+        """手动确认信号并下单"""
+        import asyncio
+
+        result = asyncio.run(auto_trader.confirm_signal(signal_id))
+        return {
+            "success": result.success,
+            "order_id": result.order_id,
+            "message": result.message,
+            "simulated": result.simulated
+        }
+
+    def ignore_signal(self, signal_id: str) -> bool:
+        """忽略信号"""
+        return auto_trader.ignore_signal(signal_id)
+
+    def get_pending_signals(self) -> dict:
+        """获取待确认的信号列表"""
+        pending = auto_trader.get_pending_signals()
+        return {
+            signal_id: {
+                "id": signal.id,
+                "symbol": signal.symbol,
+                "signal_type": signal.signal_type,
+                "price": float(signal.price) if signal.price else None,
+                "volume": signal.volume,
+                "timestamp": signal.timestamp.isoformat() if signal.timestamp else None
+            }
+            for signal_id, signal in pending.items()
+        }
+
+    def get_simulated_trades(self) -> list:
+        """获取模拟交易记录"""
+        return auto_trader.get_simulated_trades()

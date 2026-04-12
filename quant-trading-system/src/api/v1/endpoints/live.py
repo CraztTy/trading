@@ -4,6 +4,10 @@
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from typing import List, Optional
 
+from src.core.auto_trader import auto_trader, TradeMode
+from src.core.signal_publisher import signal_publisher
+from src.api.v1.exceptions import ValidationError, NotFoundError
+
 router = APIRouter()
 
 # 模拟实盘监控状态
@@ -141,3 +145,80 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+# 切换交易模式
+@router.post("/mode")
+async def set_trade_mode(request: dict):
+    """设置交易模式"""
+    mode = request.get("mode")
+    if mode not in ["auto", "manual", "simulate", "pause"]:
+        raise ValidationError("Invalid trade mode", field="mode", value=mode)
+
+    auto_trader.set_mode(TradeMode(mode))
+    return {"success": True, "mode": mode}
+
+
+# 获取信号历史
+@router.get("/signals")
+async def get_signal_history(
+    strategy_id: str = None,
+    symbol: str = None,
+    status: str = None,
+    limit: int = 100
+):
+    """获取信号历史"""
+    signals = signal_publisher.get_signal_history(
+        strategy_id=strategy_id,
+        symbol=symbol,
+        status=status,
+        limit=limit
+    )
+    return [s.to_dict() for s in signals]
+
+
+# 确认信号（手动模式）
+@router.post("/signals/{signal_id}/confirm")
+async def confirm_signal(signal_id: str):
+    """确认信号并下单"""
+    result = await auto_trader.confirm_signal(signal_id)
+    return {
+        "success": result.success,
+        "order_id": result.order_id,
+        "message": result.message
+    }
+
+
+# 忽略信号
+@router.post("/signals/{signal_id}/ignore")
+async def ignore_signal(signal_id: str):
+    """忽略信号"""
+    success = auto_trader.ignore_signal(signal_id)
+    return {"success": success}
+
+
+# 获取待确认信号
+@router.get("/signals/pending")
+async def get_pending_signals():
+    """获取待手动确认的信号"""
+    signals = auto_trader.get_pending_signals()
+    return {sid: s.to_dict() for sid, s in signals.items()}
+
+
+# 获取模拟交易记录
+@router.get("/simulated-trades")
+async def get_simulated_trades():
+    """获取模拟交易记录"""
+    trades = auto_trader.get_simulated_trades()
+    return trades
+
+
+# 获取绩效统计
+@router.get("/performance")
+async def get_performance():
+    """获取实盘绩效"""
+    stats = signal_publisher.get_stats()
+    return {
+        "signals": stats,
+        "mode": auto_trader.get_mode().value
+    }
