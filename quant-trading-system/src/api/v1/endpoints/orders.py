@@ -6,7 +6,7 @@
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field, validator
 
@@ -15,6 +15,12 @@ from src.models.order import Order
 from src.models.base import get_db
 from src.models.enums import OrderStatus, OrderDirection, OrderType
 from src.common.logger import TradingLogger
+from src.api.v1.exceptions import (
+    ValidationError,
+    OrderNotFoundError,
+    InvalidOrderStateError,
+    InsufficientFundsError
+)
 
 logger = TradingLogger(__name__)
 router = APIRouter()
@@ -119,7 +125,10 @@ async def create_order(
         success = await service.submit_order(order)
 
         if not success:
-            raise HTTPException(status_code=400, detail="订单提交失败")
+            raise InsufficientFundsError(
+                required=Decimal(str(request.qty)) * (request.price or Decimal('0')),
+                available=Decimal('0')
+            )
 
         await db.commit()
 
@@ -133,11 +142,14 @@ async def create_order(
 
     except ValueError as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        raise ValidationError(message=str(e), field="request")
+    except InsufficientFundsError:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
         logger.error(f"创建订单失败: {e}")
-        raise HTTPException(status_code=500, detail="创建订单失败")
+        raise
 
 
 @router.get("/{order_id}", response_model=OrderResponse)
@@ -150,7 +162,7 @@ async def get_order(
     order = await service.get_order(order_id)
 
     if not order:
-        raise HTTPException(status_code=404, detail="订单不存在")
+        raise OrderNotFoundError(order_id=order_id)
 
     return order.to_dict()
 
@@ -199,12 +211,24 @@ async def cancel_order(
 
     order = await service.get_order(order_id)
     if not order:
-        raise HTTPException(status_code=404, detail="订单不存在")
+        raise OrderNotFoundError(order_id=order_id)
+
+    # 检查订单状态是否可以撤单
+    if order.status not in [OrderStatus.PENDING, OrderStatus.PARTIAL]:
+        raise InvalidOrderStateError(
+            order_id=order_id,
+            current_status=order.status.value,
+            expected_status="PENDING or PARTIAL"
+        )
 
     success = await service.cancel_order(order)
 
     if not success:
-        raise HTTPException(status_code=400, detail="撤单失败，订单可能已成交或已撤")
+        raise InvalidOrderStateError(
+            order_id=order_id,
+            current_status=order.status.value,
+            expected_status="CANCELLABLE"
+        )
 
     await db.commit()
 
@@ -228,17 +252,22 @@ async def fill_order(
 
     order = await service.get_order(order_id)
     if not order:
-        raise HTTPException(status_code=404, detail="订单不存在")
+        raise OrderNotFoundError(order_id=order_id)
 
     # 检查是否可以成交
     if order.status not in [OrderStatus.PENDING, OrderStatus.PARTIAL]:
-        raise HTTPException(status_code=400, detail=f"订单状态 {order.status.value} 不可成交")
+        raise InvalidOrderStateError(
+            order_id=order_id,
+            current_status=order.status.value,
+            expected_status="PENDING or PARTIAL"
+        )
 
     # 检查成交数量
     if request.fill_qty > order.remaining_qty:
-        raise HTTPException(
-            status_code=400,
-            detail=f"成交数量 {request.fill_qty} 超过剩余数量 {order.remaining_qty}"
+        raise ValidationError(
+            message=f"Fill quantity {request.fill_qty} exceeds remaining quantity {order.remaining_qty}",
+            field="fill_qty",
+            value=request.fill_qty
         )
 
     success = await service.fill_order(
@@ -248,7 +277,7 @@ async def fill_order(
     )
 
     if not success:
-        raise HTTPException(status_code=500, detail="成交处理失败")
+        raise ValidationError(message="Fill order processing failed", field="order")
 
     await db.commit()
 

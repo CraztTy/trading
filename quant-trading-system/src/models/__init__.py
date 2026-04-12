@@ -30,6 +30,10 @@ from src.models.balance_flow import BalanceFlow
 from src.models.daily_settlement import DailySettlement
 from src.models.market_data import MarketDataSnapshot
 from src.models.user import User
+from src.models.order_state_history import OrderStateHistory
+from src.models.signal_log import SignalLog
+from src.models.audit_log import AuditLog
+from src.models.data_quality_log import DataQualityLog
 
 __all__ = [
     # 基础
@@ -58,4 +62,9 @@ __all__ = [
     "DailySettlement",
     "MarketDataSnapshot",
     "User",
+    "OrderStateHistory",
+    # 新模型 - Phase 1优化
+    "SignalLog",
+    "AuditLog",
+    "DataQualityLog",
 ]

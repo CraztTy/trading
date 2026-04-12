@@ -24,6 +24,7 @@ import asyncio
 from src.strategy.base import StrategyBase, StrategyContext, Signal, SignalType
 from src.market_data.models import TickData, KLineData
 from src.common.logger import TradingLogger
+from src.common.metrics import metrics
 
 logger = TradingLogger(__name__)
 
@@ -418,9 +419,19 @@ class ZhongshuSheng:
         is_new = self.signal_cache.add(event)
         if not is_new:
             self._stats["signals_deduplicated"] += 1
+            # 记录去重指标
+            metrics.increment("signals.deduplicated", tags={"strategy": strategy.strategy_id})
             return
 
         self._stats["signals_generated"] += 1
+
+        # 记录信号生成指标
+        metrics.increment("signals.generated", tags={
+            "strategy": strategy.strategy_id,
+            "type": signal.type.value,
+            "symbol": signal.symbol
+        })
+
         logger.info(f"生成信号: {event.signal_id} [{signal.type.value}] {signal.symbol}")
 
         # 分发信号（到门下省风控）

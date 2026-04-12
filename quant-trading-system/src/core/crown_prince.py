@@ -22,6 +22,8 @@ import pandas as pd
 
 from src.market_data.models import TickData, KLineData, MarketDepth
 from src.common.logger import TradingLogger
+from src.common.metrics import metrics
+from src.core.data_quality import DataQualityMonitor, DataQualityScore
 
 logger = TradingLogger(__name__)
 
@@ -302,6 +304,7 @@ class CrownPrince:
         self._initialized = True
         self.validator = DataValidator()
         self.normalizer = SymbolNormalizer()
+        self.quality_monitor = DataQualityMonitor()
 
         # 禁售股票列表
         self.banned_stocks = set()
@@ -372,12 +375,35 @@ class CrownPrince:
 
         if not result.is_valid:
             self._stats["invalid"] += 1
+            # 记录数据校验失败指标
+            metrics.increment("data.validation", tags={
+                "type": "tick",
+                "result": "invalid",
+                "symbol": tick.symbol
+            })
             logger.warning(f"Tick数据校验失败: {result.errors}")
             return result
 
         self._stats["valid"] += 1
 
-        # 3. 分发
+        # 记录数据校验通过指标
+        metrics.increment("data.validation", tags={
+            "type": "tick",
+            "result": "valid",
+            "symbol": tick.symbol
+        })
+
+        # 3. 数据质量评估
+        quality_score = self.quality_monitor.evaluate_tick(tick)
+        # 记录数据质量指标
+        metrics.gauge("data.quality_score", quality_score.overall, tags={
+            "symbol": tick.symbol,
+            "type": "tick"
+        })
+        if quality_score.overall < 0.6:
+            logger.warning(f"[{tick.symbol}] 数据质量较低: {quality_score.overall:.2f}")
+
+        # 4. 分发
         self._dispatch(DataType.TICK, tick, result)
 
         return result
@@ -405,10 +431,23 @@ class CrownPrince:
 
         if not result.is_valid:
             self._stats["invalid"] += 1
+            # 记录数据校验失败指标
+            metrics.increment("data.validation", tags={
+                "type": "kline",
+                "result": "invalid",
+                "symbol": kline.symbol
+            })
             logger.warning(f"K线数据校验失败: {result.errors}")
             return result
 
         self._stats["valid"] += 1
+
+        # 记录数据校验通过指标
+        metrics.increment("data.validation", tags={
+            "type": "kline",
+            "result": "valid",
+            "symbol": kline.symbol
+        })
 
         # 分发
         self._dispatch(DataType.KLINE, kline, result)
@@ -438,15 +477,34 @@ class CrownPrince:
 
         if not result.is_valid:
             self._stats["invalid"] += 1
+            # 记录数据校验失败指标
+            metrics.increment("data.validation", tags={
+                "type": "klines_df",
+                "result": "invalid",
+                "symbol": symbol
+            })
             logger.warning(f"K线数据校验失败: {result.errors}")
             return None
 
         # 流动性检查
         if not self._check_liquidity(klines):
             logger.warning(f"股票{symbol}流动性不足")
+            # 记录流动性不足指标
+            metrics.increment("data.validation", tags={
+                "type": "klines_df",
+                "result": "liquidity_insufficient",
+                "symbol": symbol
+            })
             return None
 
         self._stats["valid"] += 1
+
+        # 记录数据校验通过指标
+        metrics.increment("data.validation", tags={
+            "type": "klines_df",
+            "result": "valid",
+            "symbol": symbol
+        })
 
         # 分发
         self._dispatch(DataType.KLINE, klines, result)
@@ -500,6 +558,61 @@ class CrownPrince:
             "invalid": 0,
             "dispatched": 0,
         }
+
+    def get_data_quality(self, symbol: str) -> Optional[DataQualityScore]:
+        """
+        获取数据质量评分
+
+        Args:
+            symbol: 标的代码
+
+        Returns:
+            DataQualityScore: 数据质量评分，无记录时返回None
+
+        Example:
+            score = crown_prince.get_data_quality("000001.SZ")
+            print(score.overall)  # 0.95
+            print(score.issues)   # []
+        """
+        normalized = self.normalizer.normalize(symbol)
+        if not normalized:
+            logger.warning(f"无效的标的代码: {symbol}")
+            return None
+
+        return self.quality_monitor.get_latest_score(normalized)
+
+    def get_data_quality_history(self, symbol: str, limit: int = 10) -> List[DataQualityScore]:
+        """
+        获取数据质量评分历史
+
+        Args:
+            symbol: 标的代码
+            limit: 返回记录数量
+
+        Returns:
+            List[DataQualityScore]: 质量评分历史列表
+        """
+        normalized = self.normalizer.normalize(symbol)
+        if not normalized:
+            return []
+
+        return self.quality_monitor.get_score_history(normalized, limit)
+
+    def get_data_quality_summary(self, symbol: str) -> Dict[str, Any]:
+        """
+        获取数据质量汇总报告
+
+        Args:
+            symbol: 标的代码
+
+        Returns:
+            Dict: 包含质量评分汇总信息的字典
+        """
+        normalized = self.normalizer.normalize(symbol)
+        if not normalized:
+            return {"symbol": symbol, "has_data": False, "message": "无效的标的代码"}
+
+        return self.quality_monitor.get_quality_summary(normalized)
 
 
 # 全局太子院实例

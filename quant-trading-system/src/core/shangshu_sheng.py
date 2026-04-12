@@ -22,14 +22,21 @@ from typing import Dict, List, Optional, Any, Callable
 from queue import PriorityQueue
 import uuid
 
+from sqlalchemy import select
+
 from src.strategy.base import Signal, SignalType
 from src.models.order import Order
 from src.models.trade import Trade
 from src.models.position import Position
 from src.models.balance_flow import BalanceFlow
+from src.models.order_state_history import OrderStateHistory
 from src.models.enums import OrderStatus, OrderDirection, FlowType
 from src.common.database import db_manager
 from src.common.logger import TradingLogger
+from src.common.metrics import metrics
+from src.core.order_state_machine import (
+    OrderStateMachine, OrderEvent, create_order_state_machine
+)
 
 logger = TradingLogger(__name__)
 
@@ -401,6 +408,10 @@ class ShangshuSheng:
         # 回调
         self._on_trade_callbacks: List[Callable[[Trade], None]] = []
         self._on_position_callbacks: List[Callable[[Position], None]] = []
+        self._on_order_state_callbacks: List[Callable[[Order, str, str], None]] = []
+
+        # 状态机管理
+        self._state_machines: Dict[str, OrderStateMachine] = {}
 
         # 运行状态
         self._running = False
@@ -480,6 +491,35 @@ class ShangshuSheng:
         request_id = self.order_queue.enqueue(request)
         self._stats["orders_submitted"] += 1
 
+        # 记录订单提交指标
+        metrics.increment("orders.submitted", tags={
+            "symbol": signal.symbol,
+            "direction": signal.type.value,
+            "priority": priority.name
+        })
+
+        logger.info(f"信号提交: {request_id} {signal.symbol} {signal.type.value}")
+        return request_id
+        """
+        提交信号到执行队列
+
+        Args:
+            signal: 交易信号
+            account_id: 账户ID
+            priority: 优先级
+
+        Returns:
+            request_id
+        """
+        request = OrderRequest(
+            signal=signal,
+            account_id=account_id,
+            priority=priority
+        )
+
+        request_id = self.order_queue.enqueue(request)
+        self._stats["orders_submitted"] += 1
+
         logger.info(f"信号提交: {request_id} {signal.symbol} {signal.type.value}")
         return request_id
 
@@ -501,50 +541,93 @@ class ShangshuSheng:
                 price=signal.price or Decimal("0")
             )
 
-            # 2. 冻结资金
+            # 2. 初始化状态机
+            sm = self._get_or_create_state_machine(order)
+
+            # 3. 保存订单到数据库
+            async with db_manager.get_session() as session:
+                session.add(order)
+                await session.commit()
+                # 刷新以获取订单ID
+                await session.refresh(order)
+
+            # 4. 冻结资金
             freeze_amount = order.price * order.qty * Decimal("1.002")  # 预留费用
             frozen = await self.capital_manager.freeze_for_order(
                 account_id, order.order_id, freeze_amount
             )
 
             if not frozen:
+                # 资金冻结失败，拒绝订单
+                sm.transition(OrderEvent.REJECT, {"reason": "资金冻结失败"})
+                async with db_manager.get_session() as session:
+                    await session.merge(order)
+                    await session.commit()
                 self._stats["orders_rejected"] += 1
+                # 记录订单拒绝指标
+                metrics.increment("orders.rejected", tags={
+                    "symbol": signal.symbol,
+                    "reason": "freeze_failed"
+                })
                 logger.warning(f"资金冻结失败: {account_id} {signal.symbol}")
                 return
 
-            # 3. 执行订单
+            # 5. 提交订单到交易所（状态转换）
+            sm.transition(OrderEvent.SUBMIT, {"reason": "提交到交易所"})
+            async with db_manager.get_session() as session:
+                await session.merge(order)
+                await session.commit()
+
+            # 6. 执行订单
             result = await self.execution_engine.execute(order)
 
             if not result.success:
-                # 执行失败，解冻资金
+                # 执行失败，解冻资金并拒绝订单
                 await self.capital_manager.unfreeze_for_order(
                     account_id, order.order_id, freeze_amount
                 )
+                sm.transition(OrderEvent.REJECT, {"reason": result.message})
+                async with db_manager.get_session() as session:
+                    await session.merge(order)
+                    await session.commit()
                 self._stats["orders_rejected"] += 1
+                # 记录订单拒绝指标
+                metrics.increment("orders.rejected", tags={
+                    "symbol": signal.symbol,
+                    "reason": "execution_failed"
+                })
                 logger.warning(f"订单执行失败: {result.message}")
                 return
 
-            # 4. 创建成交记录
-            trade = Trade(
-                order_id=order.order_id,
-                account_id=account_id,
-                symbol=signal.symbol,
-                direction=order.direction,
-                qty=result.filled_qty,
-                price=result.filled_price,
-                amount=result.filled_price * result.filled_qty,
-                commission=result.filled_amount * Decimal("0.0003") if hasattr(result, 'filled_amount') else Decimal("0"),
-                stamp_tax=result.filled_amount * Decimal("0.001") if order.direction == OrderDirection.SELL and hasattr(result, 'filled_amount') else Decimal("0"),
-                transfer_fee=result.filled_amount * Decimal("0.00002") if hasattr(result, 'filled_amount') else Decimal("0"),
+            # 7. 处理成交（支持部分成交）
+            trade = await self.handle_partial_fill(
+                order,
+                result.filled_qty,
+                result.filled_price,
+                f"TRD{uuid.uuid4().hex[:16].upper()}"
             )
 
-            # 5. 资金清算
+            if not trade:
+                logger.error(f"成交处理失败: {order.order_id}")
+                return
+
+            # 8. 保存成交记录
+            async with db_manager.get_session() as session:
+                session.add(trade)
+                await session.commit()
+
+            # 9. 资金清算
             await self.capital_manager.deduct_for_trade(account_id, trade)
 
-            # 6. 更新持仓
+            # 10. 更新持仓
             position = await self.position_manager.update_position(trade)
 
-            # 7. 触发回调
+            # 11. 保存最终订单状态
+            async with db_manager.get_session() as session:
+                await session.merge(order)
+                await session.commit()
+
+            # 12. 触发回调
             self._notify_trade(trade)
             if position:
                 self._notify_position(position)
@@ -552,14 +635,25 @@ class ShangshuSheng:
             self._stats["orders_executed"] += 1
             self._stats["trades_completed"] += 1
 
+            # 记录订单执行指标
+            metrics.increment("orders.executed", tags={
+                "symbol": signal.symbol,
+                "direction": signal.type.value
+            })
+
             logger.info(
                 f"订单执行完成: {signal.symbol}, qty={result.filled_qty}, "
-                f"price={result.filled_price}"
+                f"price={result.filled_price}, status={order.status.value}"
             )
 
         except Exception as e:
             logger.error(f"订单处理失败: {e}")
             self._stats["orders_rejected"] += 1
+            # 记录订单拒绝指标
+            metrics.increment("orders.rejected", tags={
+                "symbol": signal.symbol,
+                "reason": "exception"
+            })
 
     def _notify_trade(self, trade: Trade):
         """通知成交"""
@@ -590,6 +684,281 @@ class ShangshuSheng:
     def on_position(self, callback: Callable[[Position], None]):
         """注册持仓更新回调"""
         self._on_position_callbacks.append(callback)
+
+    def on_order_state_change(self, callback: Callable[[Order, str, str], None]):
+        """
+        注册订单状态变更回调
+
+        Args:
+            callback: 回调函数，参数为(order, from_status, to_status)
+        """
+        self._on_order_state_callbacks.append(callback)
+
+    def _get_or_create_state_machine(self, order: Order) -> OrderStateMachine:
+        """
+        获取或创建订单状态机
+
+        Args:
+            order: 订单实例
+
+        Returns:
+            订单状态机
+        """
+        if order.order_id not in self._state_machines:
+            sm = create_order_state_machine(order)
+            # 注册状态变更回调
+            sm.register_callback(OrderEvent.SUBMIT, self._on_state_transition)
+            sm.register_callback(OrderEvent.FILL_PARTIAL, self._on_state_transition)
+            sm.register_callback(OrderEvent.FILL_FULL, self._on_state_transition)
+            sm.register_callback(OrderEvent.CANCEL, self._on_state_transition)
+            sm.register_callback(OrderEvent.REJECT, self._on_state_transition)
+            sm.register_callback(OrderEvent.EXPIRE, self._on_state_transition)
+            self._state_machines[order.order_id] = sm
+        return self._state_machines[order.order_id]
+
+    def _on_state_transition(self, order: Order, transition):
+        """
+        状态转换回调处理
+
+        Args:
+            order: 订单实例
+            transition: 状态转换记录
+        """
+        from_status = transition.from_status.value
+        to_status = transition.to_status.value
+
+        # 异步记录状态历史
+        asyncio.create_task(
+            self._record_state_history(
+                order, from_status, to_status, transition.event.name, transition.details
+            )
+        )
+
+        # 触发外部回调
+        for callback in self._on_order_state_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(order, from_status, to_status))
+                else:
+                    callback(order, from_status, to_status)
+            except Exception as e:
+                logger.error(f"订单状态回调失败: {e}")
+
+    async def _record_state_history(
+        self,
+        order: Order,
+        from_status: str,
+        to_status: str,
+        event: str,
+        details: Optional[Dict] = None
+    ):
+        """
+        记录订单状态历史到数据库
+
+        Args:
+            order: 订单实例
+            from_status: 原状态
+            to_status: 新状态
+            event: 事件类型
+            details: 详情
+        """
+        try:
+            reason = details.get("reason", f"事件: {event}") if details else f"事件: {event}"
+            history = OrderStateHistory(
+                order_id=order.id,
+                from_status=from_status,
+                to_status=to_status,
+                reason=reason,
+                metadata=details
+            )
+
+            async with db_manager.get_session() as session:
+                session.add(history)
+                await session.commit()
+
+            logger.debug(
+                f"状态历史已记录: {order.order_id} {from_status} -> {to_status}"
+            )
+        except Exception as e:
+            logger.error(f"记录状态历史失败: {e}")
+
+    async def cancel_order(self, order_id: str, reason: str = "用户撤单") -> bool:
+        """
+        撤单操作
+
+        Args:
+            order_id: 订单ID
+            reason: 撤单原因
+
+        Returns:
+            True如果撤单成功，否则False
+        """
+        try:
+            async with db_manager.get_session() as session:
+                # 查询订单
+                result = await session.execute(
+                    select(Order).where(Order.order_id == order_id)
+                )
+                order = result.scalar_one_or_none()
+
+                if not order:
+                    logger.warning(f"撤单失败: 订单不存在 {order_id}")
+                    return False
+
+                # 获取状态机
+                sm = self._get_or_create_state_machine(order)
+
+                # 检查是否可以撤单
+                if not sm.can_cancel():
+                    logger.warning(
+                        f"撤单失败: 订单状态不允许撤单 {order_id}, status={order.status.value}"
+                    )
+                    return False
+
+                # 执行撤单
+                # 1. 解冻资金
+                freeze_amount = order.price * order.qty * Decimal("1.002")
+                await self.capital_manager.unfreeze_for_order(
+                    order.account_id, order_id, freeze_amount
+                )
+
+                # 2. 状态转换
+                sm.transition(OrderEvent.CANCEL, {"reason": reason})
+
+                # 3. 更新数据库
+                order.status = OrderStatus.CANCELLED
+                order.cancelled_at = datetime.now()
+                await session.commit()
+
+                logger.info(f"撤单成功: {order_id}, reason={reason}")
+                # 记录撤单指标
+                metrics.increment("orders.cancelled", tags={"reason": reason})
+                return True
+
+        except Exception as e:
+            logger.error(f"撤单异常: {order_id}, error={e}")
+            # 记录撤单失败指标
+            metrics.increment("orders.cancelled", tags={"reason": "error"})
+            return False
+
+    async def handle_partial_fill(
+        self,
+        order: Order,
+        filled_qty: int,
+        filled_price: Decimal,
+        trade_id: str
+    ) -> Optional[Trade]:
+        """
+        处理部分成交
+
+        Args:
+            order: 订单实例
+            filled_qty: 本次成交数量
+            filled_price: 成交价格
+            trade_id: 成交ID
+
+        Returns:
+            成交记录，如果处理失败返回None
+        """
+        try:
+            # 获取状态机
+            sm = self._get_or_create_state_machine(order)
+
+            # 检查是否可以成交
+            if not sm.can_fill():
+                logger.warning(
+                    f"无法成交: 订单状态不允许 {order.order_id}, status={order.status.value}"
+                )
+                return None
+
+            # 更新订单成交信息
+            order.fill(filled_qty, filled_price)
+
+            # 状态转换
+            if order.is_filled:
+                sm.transition(
+                    OrderEvent.FILL_FULL,
+                    {"fill_qty": filled_qty, "fill_price": str(filled_price)}
+                )
+            else:
+                sm.transition(
+                    OrderEvent.FILL_PARTIAL,
+                    {"fill_qty": filled_qty, "fill_price": str(filled_price)}
+                )
+
+            # 创建成交记录
+            trade = Trade(
+                trade_id=trade_id,
+                order_id=order.id,
+                account_id=order.account_id,
+                symbol=order.symbol,
+                direction=order.direction,
+                qty=filled_qty,
+                price=filled_price,
+                trade_time=datetime.now(),
+                strategy_id=order.strategy_id,
+                symbol_name=order.symbol_name
+            )
+
+            # 计算费用
+            trade.calculate_fees(
+                commission_rate=Decimal("0.0003"),
+                min_commission=Decimal("5"),
+                stamp_tax_rate=Decimal("0.001"),
+                transfer_fee_rate=Decimal("0.00002")
+            )
+
+            logger.info(
+                f"部分成交处理完成: {order.order_id}, "
+                f"filled={filled_qty}, price={filled_price}, "
+                f"total_filled={order.filled_qty}/{order.qty}"
+            )
+
+            return trade
+
+        except Exception as e:
+            logger.error(f"部分成交处理失败: {order.order_id}, error={e}")
+            return None
+
+    async def check_order_timeout(self, order: Order, timeout_seconds: float = 300) -> bool:
+        """
+        检查订单是否超时
+
+        Args:
+            order: 订单实例
+            timeout_seconds: 超时时间（秒），默认5分钟
+
+        Returns:
+            True如果订单已超时并处理，否则False
+        """
+        if not order.created_at:
+            return False
+
+        elapsed = (datetime.now() - order.created_at).total_seconds()
+        if elapsed < timeout_seconds:
+            return False
+
+        # 订单已超时
+        sm = self._get_or_create_state_machine(order)
+
+        if sm.can_cancel():
+            logger.warning(f"订单超时，自动撤单: {order.order_id}, elapsed={elapsed}s")
+            await self.cancel_order(order.order_id, f"订单超时({elapsed:.0f}s)")
+            return True
+
+        return False
+
+    def get_order_state_machine(self, order_id: str) -> Optional[OrderStateMachine]:
+        """
+        获取订单状态机
+
+        Args:
+            order_id: 订单ID
+
+        Returns:
+            订单状态机，如果不存在返回None
+        """
+        return self._state_machines.get(order_id)
 
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""

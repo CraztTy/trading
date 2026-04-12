@@ -16,6 +16,9 @@ from src.common.database import init_db, close_db, db_manager
 from src.common.config import settings
 from src.common.logger import logger
 from src.models.user import User
+from src.models.signal_log import SignalLog
+from src.models.audit_log import AuditLog
+from src.models.data_quality_log import DataQualityLog
 from src.common.auth import get_password_hash
 
 

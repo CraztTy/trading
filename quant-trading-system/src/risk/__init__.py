@@ -5,6 +5,7 @@
 - position_manager: 仓位管理器
 - stop_loss: 止损止盈机制
 - risk_manager: 风控管理器（集成到策略执行）
+- rules: 风控规则模块
 """
 from src.risk.position_manager import PositionManager, PositionLimit, PositionLimitType
 from src.risk.stop_loss import (
@@ -13,6 +14,24 @@ from src.risk.stop_loss import (
     StopLossResult, TakeProfitResult
 )
 from src.risk.risk_manager import RiskManager, RiskConfig, TradeSignal
+from src.risk.rules import (
+    # 规则基类和枚举
+    RiskRule,
+    RiskLevel,
+    RiskRuleType,
+    RiskCheckResult,
+    # 具体规则实现
+    PositionLimitRule,
+    StopLossCheckRule,
+    DailyLossLimitRule,
+    OrderFrequencyRule,
+    ConsecutiveLossRule,
+    PriceLimitRule,
+    BlacklistRule,
+    # 规则注册表
+    RiskRuleRegistry,
+    rule_registry,
+)
 
 __all__ = [
     # 仓位管理
@@ -31,4 +50,18 @@ __all__ = [
     "RiskManager",
     "RiskConfig",
     "TradeSignal",
+    # 风控规则
+    "RiskRule",
+    "RiskLevel",
+    "RiskRuleType",
+    "RiskCheckResult",
+    "PositionLimitRule",
+    "StopLossCheckRule",
+    "DailyLossLimitRule",
+    "OrderFrequencyRule",
+    "ConsecutiveLossRule",
+    "PriceLimitRule",
+    "BlacklistRule",
+    "RiskRuleRegistry",
+    "rule_registry",
 ]

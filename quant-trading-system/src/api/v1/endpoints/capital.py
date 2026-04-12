@@ -7,12 +7,20 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from src.finance.capital_manager import CapitalManager, CapitalOperationResult, CapitalSnapshot
 from src.models.base import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.v1.exceptions import (
+    ValidationError,
+    NotFoundError,
+    AccountNotFoundError,
+    InvalidAmountError,
+    FlowTypeError,
+    BusinessLogicError
+)
 
 router = APIRouter()
 
@@ -104,7 +112,22 @@ async def deposit(
     )
 
     if not result.success:
-        raise HTTPException(status_code=400, detail=result.error_msg)
+        # 根据错误信息判断具体异常类型
+        error_msg = result.error_msg or ""
+        if "账户不存在" in error_msg:
+            raise AccountNotFoundError(account_id=account_id)
+        elif "金额无效" in error_msg:
+            raise InvalidAmountError(
+                amount=request.amount,
+                reason="Amount must be greater than 0 with at most 2 decimal places"
+            )
+        elif "账户状态异常" in error_msg:
+            raise BusinessLogicError(
+                message=f"Account status is not active: {account_id}",
+                details={"account_id": account_id}
+            )
+        else:
+            raise BusinessLogicError(message=error_msg)
 
     return CapitalOperationResponse(
         success=result.success,
@@ -140,7 +163,19 @@ async def withdraw(
     )
 
     if not result.success:
-        raise HTTPException(status_code=400, detail=result.error_msg)
+        error_msg = result.error_msg or ""
+        if "账户不存在" in error_msg:
+            raise AccountNotFoundError(account_id=account_id)
+        elif "可用资金不足" in error_msg:
+            # 从错误消息中提取金额信息
+            raise BusinessLogicError(
+                message=error_msg,
+                details={"account_id": account_id, "requested_amount": float(request.amount)}
+            )
+        elif "金额无效" in error_msg:
+            raise InvalidAmountError(amount=request.amount)
+        else:
+            raise BusinessLogicError(message=error_msg)
 
     return CapitalOperationResponse(
         success=result.success,
@@ -177,7 +212,24 @@ async def transfer(
     )
 
     if not result.success:
-        raise HTTPException(status_code=400, detail=result.error_msg)
+        error_msg = result.error_msg or ""
+        if "转出账户不存在" in error_msg:
+            raise AccountNotFoundError(account_id=account_id)
+        elif "转入账户不存在" in error_msg:
+            raise NotFoundError("Account", str(request.to_account_id))
+        elif "转出账户余额不足" in error_msg:
+            raise BusinessLogicError(
+                message=f"Insufficient balance in source account: {account_id}",
+                details={
+                    "from_account_id": account_id,
+                    "to_account_id": request.to_account_id,
+                    "amount": float(request.amount)
+                }
+            )
+        elif "金额无效" in error_msg:
+            raise InvalidAmountError(amount=request.amount)
+        else:
+            raise BusinessLogicError(message=error_msg)
 
     return CapitalOperationResponse(
         success=result.success,
@@ -204,7 +256,13 @@ async def get_capital_snapshot(
         CapitalSnapshotResponse: 资金快照
     """
     manager = CapitalManager(session)
-    snapshot = await manager.create_snapshot(account_id)
+
+    try:
+        snapshot = await manager.create_snapshot(account_id)
+    except Exception as e:
+        if "账户不存在" in str(e) or "NoneType" in str(e):
+            raise AccountNotFoundError(account_id=account_id)
+        raise
 
     return CapitalSnapshotResponse(
         account_id=snapshot.account_id,
@@ -251,7 +309,7 @@ async def get_balance_flows(
         try:
             flow_type_enum = FlowType(flow_type)
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"无效的流水类型: {flow_type}")
+            raise FlowTypeError(flow_type=flow_type)
 
     flows = await manager.get_balance_flows(
         account_id=account_id,

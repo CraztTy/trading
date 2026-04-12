@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from src.models.account import Account
     from src.models.strategy import Strategy
     from src.models.trade import Trade
+    from src.models.order_state_history import OrderStateHistory
 
 
 class Order(Base):
@@ -66,6 +67,13 @@ class Order(Base):
 
     # 关系
     trades: Mapped[List["Trade"]] = relationship("Trade", back_populates="order", lazy="selectin")
+    state_history: Mapped[List["OrderStateHistory"]] = relationship(
+        "OrderStateHistory",
+        back_populates="order",
+        lazy="selectin",
+        order_by="OrderStateHistory.created_at",
+        cascade="all, delete-orphan"
+    )
 
     # 表级约束
     __table_args__ = (

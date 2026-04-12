@@ -23,42 +23,15 @@ import time
 
 from src.strategy.base import Signal, SignalType
 from src.common.logger import TradingLogger
+from src.common.metrics import metrics
+from src.risk.rules import (
+    RiskRule, RiskLevel, RiskRuleType, RiskCheckResult,
+    PositionLimitRule, StopLossCheckRule, DailyLossLimitRule,
+    OrderFrequencyRule, ConsecutiveLossRule, PriceLimitRule, BlacklistRule,
+    rule_registry
+)
 
 logger = TradingLogger(__name__)
-
-
-class RiskLevel(Enum):
-    """风险等级"""
-    CRITICAL = "critical"    # 严重 - 必须拦截
-    HIGH = "high"            # 高风险 - 建议拦截
-    MEDIUM = "medium"        # 中风险 - 警告但允许
-    LOW = "low"              # 低风险 - 记录
-    INFO = "info"            # 信息
-
-
-class RiskRuleType(Enum):
-    """风控规则类型"""
-    POSITION = "position"        # 仓位相关
-    STOP_LOSS = "stop_loss"      # 止损相关
-    FREQUENCY = "frequency"      # 频率相关
-    AMOUNT = "amount"            # 金额相关
-    CIRCUIT_BREAKER = "circuit"  # 熔断相关
-    TIME = "time"                # 时间相关
-
-
-@dataclass
-class RiskCheckResult:
-    """风控检查结果"""
-    passed: bool
-    rule_code: str
-    rule_name: str
-    message: str
-    level: RiskLevel
-    details: Optional[Dict[str, Any]] = None
-
-    def __post_init__(self):
-        if self.details is None:
-            self.details = {}
 
 
 @dataclass
@@ -73,304 +46,6 @@ class AuditResult:
     processing_time_ms: float = 0.0   # 处理耗时
 
 
-class RiskRule(ABC):
-    """风控规则基类"""
-
-    def __init__(
-        self,
-        code: str,
-        name: str,
-        rule_type: RiskRuleType,
-        level: RiskLevel = RiskLevel.HIGH,
-        enabled: bool = True
-    ):
-        self.code = code
-        self.name = name
-        self.rule_type = rule_type
-        self.level = level
-        self.enabled = enabled
-        self._check_count = 0
-        self._fail_count = 0
-
-    @abstractmethod
-    def check(self, signal: Signal, context: Dict[str, Any]) -> RiskCheckResult:
-        """执行风控检查"""
-        pass
-
-    def get_stats(self) -> Dict[str, int]:
-        """获取规则统计"""
-        return {
-            "total_checks": self._check_count,
-            "failures": self._fail_count,
-        }
-
-    def reset_stats(self):
-        """重置统计"""
-        self._check_count = 0
-        self._fail_count = 0
-
-
-class PositionLimitRule(RiskRule):
-    """仓位限制规则"""
-
-    def __init__(
-        self,
-        max_single_position_pct: Decimal = Decimal("0.10"),  # 单票10%
-        max_total_position_pct: Decimal = Decimal("0.80"),   # 总仓位80%
-    ):
-        super().__init__(
-            code="R001",
-            name="仓位限制",
-            rule_type=RiskRuleType.POSITION,
-            level=RiskLevel.CRITICAL
-        )
-        self.max_single_position_pct = max_single_position_pct
-        self.max_total_position_pct = max_total_position_pct
-
-    def check(self, signal: Signal, context: Dict[str, Any]) -> RiskCheckResult:
-        self._check_count += 1
-
-        if signal.type != SignalType.BUY:
-            return RiskCheckResult(True, self.code, self.name, "", RiskLevel.INFO)
-
-        # 获取当前持仓信息
-        positions = context.get("positions", {})
-        total_value = context.get("total_value", Decimal("0"))
-
-        if total_value <= 0:
-            return RiskCheckResult(True, self.code, self.name, "", RiskLevel.INFO)
-
-        symbol = signal.symbol
-        price = signal.price or Decimal("0")
-        volume = signal.volume or 0
-
-        # 计算新买入金额
-        new_amount = price * volume
-
-        # 检查单票仓位
-        current_position = positions.get(symbol, {})
-        current_value = current_position.get("market_value", Decimal("0"))
-        new_single_pct = (current_value + new_amount) / total_value
-
-        if new_single_pct > self.max_single_position_pct:
-            self._fail_count += 1
-            return RiskCheckResult(
-                False, self.code, self.name,
-                f"单票仓位超限: {new_single_pct:.2%} > {self.max_single_position_pct:.2%}",
-                RiskLevel.CRITICAL,
-                {"current_pct": float(current_value / total_value), "new_pct": float(new_single_pct)}
-            )
-
-        # 检查总仓位
-        total_position_value = sum(
-            p.get("market_value", Decimal("0")) for p in positions.values()
-        )
-        new_total_pct = (total_position_value + new_amount) / total_value
-
-        if new_total_pct > self.max_total_position_pct:
-            self._fail_count += 1
-            return RiskCheckResult(
-                False, self.code, self.name,
-                f"总仓位超限: {new_total_pct:.2%} > {self.max_total_position_pct:.2%}",
-                RiskLevel.CRITICAL,
-                {"current_pct": float(total_position_value / total_value), "new_pct": float(new_total_pct)}
-            )
-
-        return RiskCheckResult(True, self.code, self.name, "仓位检查通过", RiskLevel.INFO)
-
-
-class StopLossCheckRule(RiskRule):
-    """止损设置检查规则"""
-
-    def __init__(
-        self,
-        max_stop_loss_pct: Decimal = Decimal("0.05"),  # 最大止损5%
-        require_stop_loss: bool = True,                  # 是否必须有止损
-    ):
-        super().__init__(
-            code="R002",
-            name="止损检查",
-            rule_type=RiskRuleType.STOP_LOSS,
-            level=RiskLevel.HIGH
-        )
-        self.max_stop_loss_pct = max_stop_loss_pct
-        self.require_stop_loss = require_stop_loss
-
-    def check(self, signal: Signal, context: Dict[str, Any]) -> RiskCheckResult:
-        self._check_count += 1
-
-        if signal.type != SignalType.BUY:
-            return RiskCheckResult(True, self.code, self.name, "", RiskLevel.INFO)
-
-        stop_loss = context.get("stop_loss")
-        price = signal.price
-
-        if stop_loss is None:
-            if self.require_stop_loss:
-                self._fail_count += 1
-                return RiskCheckResult(
-                    False, self.code, self.name,
-                    "买入信号必须设置止损",
-                    RiskLevel.HIGH
-                )
-            return RiskCheckResult(True, self.code, self.name, "无止损但允许", RiskLevel.LOW)
-
-        # 检查止损比例
-        loss_pct = abs(price - stop_loss) / price
-        if loss_pct > self.max_stop_loss_pct:
-            self._fail_count += 1
-            return RiskCheckResult(
-                False, self.code, self.name,
-                f"止损比例过大: {loss_pct:.2%} > {self.max_stop_loss_pct:.2%}",
-                RiskLevel.HIGH,
-                {"loss_pct": float(loss_pct)}
-            )
-
-        return RiskCheckResult(True, self.code, self.name, "止损设置合理", RiskLevel.INFO)
-
-
-class DailyLossLimitRule(RiskRule):
-    """日亏损熔断规则"""
-
-    def __init__(self, max_daily_loss_pct: Decimal = Decimal("0.02")):  # 日亏2%熔断
-        super().__init__(
-            code="R003",
-            name="日亏损熔断",
-            rule_type=RiskRuleType.CIRCUIT_BREAKER,
-            level=RiskLevel.CRITICAL
-        )
-        self.max_daily_loss_pct = max_daily_loss_pct
-        self._daily_pnl: Dict[str, Decimal] = {}  # date -> pnl
-
-    def check(self, signal: Signal, context: Dict[str, Any]) -> RiskCheckResult:
-        self._check_count += 1
-
-        today = datetime.now().date().isoformat()
-        daily_pnl = self._daily_pnl.get(today, Decimal("0"))
-        total_value = context.get("total_value", Decimal("1"))
-
-        loss_pct = abs(daily_pnl) / total_value if total_value > 0 else Decimal("0")
-
-        if loss_pct > self.max_daily_loss_pct:
-            self._fail_count += 1
-            return RiskCheckResult(
-                False, self.code, self.name,
-                f"日亏损触发熔断: {loss_pct:.2%} > {self.max_daily_loss_pct:.2%}",
-                RiskLevel.CRITICAL,
-                {"daily_pnl": float(daily_pnl), "loss_pct": float(loss_pct)}
-            )
-
-        return RiskCheckResult(True, self.code, self.name, "日亏损正常", RiskLevel.INFO)
-
-    def update_daily_pnl(self, pnl: Decimal):
-        """更新日盈亏"""
-        today = datetime.now().date().isoformat()
-        self._daily_pnl[today] = self._daily_pnl.get(today, Decimal("0")) + pnl
-
-
-class OrderFrequencyRule(RiskRule):
-    """委托频率限制规则"""
-
-    def __init__(
-        self,
-        max_orders_per_minute: int = 10,      # 每分钟最大委托数
-        max_orders_per_symbol_per_minute: int = 2,  # 每票每分钟最大委托数
-    ):
-        super().__init__(
-            code="R004",
-            name="委托频率限制",
-            rule_type=RiskRuleType.FREQUENCY,
-            level=RiskLevel.MEDIUM
-        )
-        self.max_orders_per_minute = max_orders_per_minute
-        self.max_orders_per_symbol_per_minute = max_orders_per_symbol_per_minute
-        self._order_history: List[Dict[str, Any]] = []
-
-    def check(self, signal: Signal, context: Dict[str, Any]) -> RiskCheckResult:
-        self._check_count += 1
-
-        now = time.time()
-        one_minute_ago = now - 60
-
-        # 清理1分钟前的记录
-        self._order_history = [
-            h for h in self._order_history
-            if h["timestamp"] > one_minute_ago
-        ]
-
-        # 检查总频率
-        if len(self._order_history) >= self.max_orders_per_minute:
-            self._fail_count += 1
-            return RiskCheckResult(
-                False, self.code, self.name,
-                f"委托频率超限: {len(self._order_history)}/{self.max_orders_per_minute} 每分钟",
-                RiskLevel.MEDIUM
-            )
-
-        # 检查单票频率
-        symbol_orders = [
-            h for h in self._order_history
-            if h.get("symbol") == signal.symbol
-        ]
-        if len(symbol_orders) >= self.max_orders_per_symbol_per_minute:
-            self._fail_count += 1
-            return RiskCheckResult(
-                False, self.code, self.name,
-                f"单票委托频率超限: {len(symbol_orders)}/{self.max_orders_per_symbol_per_minute} 每分钟",
-                RiskLevel.MEDIUM
-            )
-
-        # 记录本次委托
-        self._order_history.append({
-            "timestamp": now,
-            "symbol": signal.symbol,
-            "type": signal.type.value
-        })
-
-        return RiskCheckResult(True, self.code, self.name, "频率检查通过", RiskLevel.INFO)
-
-
-class ConsecutiveLossRule(RiskRule):
-    """连续亏损限制规则"""
-
-    def __init__(self, max_consecutive_losses: int = 3):
-        super().__init__(
-            code="R005",
-            name="连续亏损限制",
-            rule_type=RiskRuleType.CIRCUIT_BREAKER,
-            level=RiskLevel.HIGH
-        )
-        self.max_consecutive_losses = max_consecutive_losses
-        self._consecutive_losses = 0
-        self._last_trade_pnl: Optional[Decimal] = None
-
-    def check(self, signal: Signal, context: Dict[str, Any]) -> RiskCheckResult:
-        self._check_count += 1
-
-        if self._consecutive_losses >= self.max_consecutive_losses:
-            self._fail_count += 1
-            return RiskCheckResult(
-                False, self.code, self.name,
-                f"连续亏损{self._consecutive_losses}次，暂停开仓",
-                RiskLevel.HIGH,
-                {"consecutive_losses": self._consecutive_losses}
-            )
-
-        return RiskCheckResult(
-            True, self.code, self.name,
-            f"连续亏损检查通过 ({self._consecutive_losses}/{self.max_consecutive_losses})",
-            RiskLevel.INFO
-        )
-
-    def on_trade_result(self, pnl: Decimal):
-        """交易结果回调"""
-        if pnl < 0:
-            self._consecutive_losses += 1
-        else:
-            self._consecutive_losses = 0
-        self._last_trade_pnl = pnl
-
-
 class MenxiaSheng:
     """
     门下省 - 风控审核中心（单例）
@@ -380,6 +55,7 @@ class MenxiaSheng:
     - 执行风控规则链
     - 记录审核日志
     - 触发熔断机制
+    - 支持动态规则配置
     """
 
     _instance = None
@@ -419,6 +95,9 @@ class MenxiaSheng:
             "circuit_breaker_count": 0,
         }
 
+        # 动态配置存储
+        self._rule_configs: Dict[str, Dict[str, Any]] = {}
+
         # 初始化默认规则
         self._init_default_rules()
 
@@ -431,6 +110,8 @@ class MenxiaSheng:
         self.add_rule(DailyLossLimitRule())
         self.add_rule(OrderFrequencyRule())
         self.add_rule(ConsecutiveLossRule())
+        self.add_rule(PriceLimitRule())
+        self.add_rule(BlacklistRule())
 
     def add_rule(self, rule: RiskRule):
         """添加风控规则"""
@@ -449,6 +130,87 @@ class MenxiaSheng:
                 rule.enabled = enabled
                 logger.info(f"{'启用' if enabled else '禁用'}规则: {rule_code}")
                 break
+
+    def update_rule_config(self, rule_code: str, **kwargs) -> bool:
+        """
+        动态更新规则配置
+
+        Args:
+            rule_code: 规则代码（如 "R001", "R004" 等）
+            **kwargs: 配置参数
+
+        Returns:
+            bool: 是否成功更新
+        """
+        for rule in self._rules:
+            if rule.code == rule_code:
+                try:
+                    rule.update_config(**kwargs)
+                    self._rule_configs[rule_code] = {
+                        **self._rule_configs.get(rule_code, {}),
+                        **kwargs
+                    }
+                    logger.info(f"更新规则 {rule_code} 配置: {kwargs}")
+                    return True
+                except Exception as e:
+                    logger.error(f"更新规则 {rule_code} 配置失败: {e}")
+                    return False
+        logger.warning(f"未找到规则: {rule_code}")
+        return False
+
+    def get_rule_config(self, rule_code: str) -> Optional[Dict[str, Any]]:
+        """获取规则当前配置"""
+        for rule in self._rules:
+            if rule.code == rule_code:
+                config = {}
+                for key in dir(rule):
+                    if not key.startswith('_') and not callable(getattr(rule, key)):
+                        config[key] = getattr(rule, key)
+                return config
+        return None
+
+    def configure_rules(self, configs: Dict[str, Dict[str, Any]]):
+        """
+        批量配置多个规则
+
+        Args:
+            configs: {rule_code: {param: value, ...}, ...}
+        """
+        for rule_code, params in configs.items():
+            self.update_rule_config(rule_code, **params)
+
+    def add_to_blacklist(self, symbol: str, reason: str = ""):
+        """添加标的到黑名单"""
+        for rule in self._rules:
+            if isinstance(rule, BlacklistRule):
+                rule.add_to_blacklist(symbol, reason)
+                return
+        # 如果没有黑名单规则，创建一个
+        blacklist_rule = BlacklistRule()
+        blacklist_rule.add_to_blacklist(symbol, reason)
+        self.add_rule(blacklist_rule)
+
+    def remove_from_blacklist(self, symbol: str):
+        """从黑名单移除标的"""
+        for rule in self._rules:
+            if isinstance(rule, BlacklistRule):
+                rule.remove_from_blacklist(symbol)
+                return
+
+    def set_price_limit(self, symbol: str, limit_pct: Decimal):
+        """设置股票涨跌幅限制"""
+        for rule in self._rules:
+            if isinstance(rule, PriceLimitRule):
+                rule.set_symbol_limit(symbol, limit_pct)
+                return
+
+    def on_trade_result(self, pnl: Decimal):
+        """交易结果回调（用于更新连续亏损等状态）"""
+        for rule in self._rules:
+            if isinstance(rule, ConsecutiveLossRule):
+                rule.on_trade_result(pnl)
+            elif isinstance(rule, DailyLossLimitRule):
+                rule.update_daily_pnl(pnl)
 
     async def audit_signal(self, signal: Signal, context: Optional[Dict] = None) -> AuditResult:
         """
@@ -475,6 +237,8 @@ class MenxiaSheng:
                 rejected_by="CIRCUIT_BREAKER"
             )
             self._log_audit(result)
+            # 记录熔断拒绝指标
+            metrics.increment("risk.rejected", tags={"reason": "circuit_breaker"})
             return result
 
         # 执行规则链检查
@@ -490,15 +254,25 @@ class MenxiaSheng:
                 if not check_result.passed:
                     # 未通过，记录并返回
                     self._stats["rejected"] += 1
+                    processing_time_ms = (time.time() - start_time) * 1000
                     audit_result = AuditResult(
                         approved=False,
                         signal_id=getattr(signal, 'id', None),
                         checks=checks,
                         rejected_by=check_result.rule_code,
                         reject_reason=check_result.message,
-                        processing_time_ms=(time.time() - start_time) * 1000
+                        processing_time_ms=processing_time_ms
                     )
                     self._log_audit(audit_result)
+
+                    # 记录风控拒绝指标
+                    metrics.increment("risk.rejected", tags={
+                        "rule": check_result.rule_code,
+                        "symbol": signal.symbol
+                    })
+                    # 记录审核耗时
+                    metrics.record("risk.audit_duration", processing_time_ms, "histogram",
+                                   tags={"result": "rejected"})
 
                     # 如果是严重风险，触发熔断
                     if check_result.level == RiskLevel.CRITICAL:
@@ -515,13 +289,20 @@ class MenxiaSheng:
 
         # 所有规则通过
         self._stats["approved"] += 1
+        processing_time_ms = (time.time() - start_time) * 1000
         audit_result = AuditResult(
             approved=True,
             signal_id=getattr(signal, 'id', None),
             checks=checks,
-            processing_time_ms=(time.time() - start_time) * 1000
+            processing_time_ms=processing_time_ms
         )
         self._log_audit(audit_result)
+
+        # 记录风控通过指标
+        metrics.increment("risk.approved", tags={"symbol": signal.symbol})
+        # 记录审核耗时
+        metrics.record("risk.audit_duration", processing_time_ms, "histogram",
+                       tags={"result": "approved"})
 
         # 触发审核通过回调（等待完成）
         await self._notify_approval(signal, audit_result)
@@ -618,6 +399,20 @@ class MenxiaSheng:
         }
         for rule in self._rules:
             rule.reset_stats()
+
+    def get_rule_status(self) -> List[Dict[str, Any]]:
+        """获取所有规则状态"""
+        return [
+            {
+                "code": r.code,
+                "name": r.name,
+                "type": r.rule_type.value,
+                "level": r.level.value,
+                "enabled": r.enabled,
+                "stats": r.get_stats()
+            }
+            for r in self._rules
+        ]
 
     # 兼容旧版API
     async def review_signals(

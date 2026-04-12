@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from src.api.v1.router import router as api_v1_router
+from src.api.v1.middleware import setup_exception_handlers, ErrorHandlingMiddleware, RequestLoggingMiddleware
 from src.common.config import settings
 from src.common.logger import logger
 from src.market_data.manager import MarketDataManager
@@ -150,6 +151,15 @@ app.add_middleware(
 
 # GZip压缩中间件
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# 错误处理中间件
+app.add_middleware(ErrorHandlingMiddleware)
+
+# 请求日志中间件
+app.add_middleware(RequestLoggingMiddleware)
+
+# 注册自定义异常处理器
+setup_exception_handlers(app)
 
 
 # 全局异常处理
