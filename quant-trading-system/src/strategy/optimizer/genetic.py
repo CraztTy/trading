@@ -1,258 +1,186 @@
 """
 遗传算法优化器
-
-使用遗传算法进行参数优化
-适用于大规模参数空间
 """
 import random
-import copy
-from datetime import datetime
-from typing import Dict, List, Any, Tuple
+import asyncio
+from typing import List, Dict, Any
+from decimal import Decimal
 
-from src.strategy.optimizer.base import (
-    Optimizer, OptimizationResult, ParameterSpace, ParameterType
-)
-from src.common.logger import TradingLogger
-
-logger = TradingLogger(__name__)
+from src.strategy.optimizer.base import BaseOptimizer, OptimizationResult, ParameterSpace
 
 
-class GeneticOptimizer(Optimizer):
-    """
-    遗传算法优化器
-
-    特点：
-    - 适用于大规模参数空间
-    - 使用进化策略搜索全局最优
-    - 支持离散和连续参数
-
-    参数：
-    - population_size: 种群大小
-    - generations: 迭代代数
-    - crossover_rate: 交叉概率
-    - mutation_rate: 变异概率
-    - elitism_ratio: 精英保留比例
-    """
+class GeneticOptimizer(BaseOptimizer):
+    """遗传算法优化器"""
 
     def __init__(
         self,
-        param_space: List[ParameterSpace],
-        config,
-        population_size: int = 30,
-        generations: int = 50,
+        *args,
+        population_size: int = 20,
+        generations: int = 10,
         crossover_rate: float = 0.8,
         mutation_rate: float = 0.1,
-        elitism_ratio: float = 0.1
+        **kwargs
     ):
-        super().__init__(param_space, config)
+        super().__init__(*args, **kwargs)
         self.population_size = population_size
-        self.generations = min(generations, config.max_iterations // population_size)
+        self.generations = generations
         self.crossover_rate = crossover_rate
         self.mutation_rate = mutation_rate
-        self.elitism_ratio = elitism_ratio
 
-        # 种群和适应度
         self.population: List[Dict[str, Any]] = []
-        self.fitness_scores: List[Tuple[Dict[str, Any], float]] = []
+        self.fitness_scores: List[float] = []
 
-    def _initialize_population(self) -> None:
+    async def optimize(self, max_iterations: int = None) -> List[OptimizationResult]:
+        """
+        执行遗传算法优化
+        """
+        print(f"遗传算法: 种群大小={self.population_size}, 迭代次数={self.generations}")
+
+        # 初始化种群
+        self._initialize_population()
+
+        # 迭代进化
+        for generation in range(self.generations):
+            print(f"\n第 {generation + 1}/{self.generations} 代")
+
+            # 评估适应度
+            await self._evaluate_population()
+
+            # 记录最优解
+            best_idx = self.fitness_scores.index(max(self.fitness_scores))
+            best_params = self.population[best_idx]
+            best_fitness = self.fitness_scores[best_idx]
+            print(f"  最优适应度: {best_fitness:.4f}, 参数: {best_params}")
+
+            # 选择、交叉、变异
+            if generation < self.generations - 1:  # 最后一代不进化
+                self._evolve()
+
+        # 最终评估并返回结果
+        await self._evaluate_population()
+        self._create_results()
+
+        return self.results
+
+    def _initialize_population(self):
         """初始化种群"""
-        self.population = []
         for _ in range(self.population_size):
-            individual = self.sample_random_params()
+            individual = {}
+            for name, space in self.parameter_spaces.items():
+                individual[name] = self._random_param_value(space)
             self.population.append(individual)
 
-        logger.info(f"遗传算法: 初始化种群，大小 = {self.population_size}")
+    def _random_param_value(self, space: ParameterSpace) -> Any:
+        """生成随机参数值"""
+        if space.param_type == "int":
+            return random.randint(space.min_value, space.max_value)
+        elif space.param_type == "float":
+            return random.uniform(space.min_value, space.max_value)
+        elif space.param_type == "choice":
+            return random.choice(space.choices)
 
-    async def _evaluate_population(
-        self,
-        strategy_class,
-        symbols: List[str],
-        start_date: datetime,
-        end_date: datetime
-    ) -> None:
+    async def _evaluate_population(self):
         """评估种群适应度"""
         self.fitness_scores = []
 
         for individual in self.population:
             try:
-                score, metrics = await self._evaluate_params(
-                    strategy_class, individual, symbols, start_date, end_date
-                )
-                self.fitness_scores.append((individual, score))
+                metrics = await self.evaluation_func(individual)
+                fitness = metrics.get(self.objective_metric, 0)
+                self.fitness_scores.append(fitness)
             except Exception as e:
-                logger.error(f"评估个体失败: {e}")
-                # 给失败的个体一个极差的分数
-                bad_score = float('-inf') if self.config.direction == "maximize" else float('inf')
-                self.fitness_scores.append((individual, bad_score))
+                print(f"评估失败: {e}")
+                self.fitness_scores.append(float('-inf') if self.maximize else float('inf'))
 
-        # 按适应度排序
-        reverse = self.config.direction == "maximize"
-        self.fitness_scores.sort(key=lambda x: x[1], reverse=reverse)
-
-    def _select_parents(self, num_parents: int) -> List[Dict[str, Any]]:
-        """
-        选择父代（轮盘赌选择）
-
-        Args:
-            num_parents: 需要选择的父代数量
-
-        Returns:
-            父代列表
-        """
-        if not self.fitness_scores:
-            return []
-
-        # 使用锦标赛选择
-        parents = []
-        for _ in range(num_parents):
-            # 随机选择3个进行锦标赛
-            tournament = random.sample(self.fitness_scores, min(3, len(self.fitness_scores)))
-            winner = max(tournament, key=lambda x: x[1])[0]
-            parents.append(winner)
-
-        return parents
-
-    def _crossover(
-        self,
-        parent1: Dict[str, Any],
-        parent2: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        交叉操作
-
-        Args:
-            parent1: 父代1
-            parent2: 父代2
-
-        Returns:
-            子代
-        """
-        if random.random() > self.crossover_rate:
-            return copy.deepcopy(parent1)
-
-        child = {}
-        for param in self.param_space:
-            # 均匀交叉：随机从两个父代中选择
-            if random.random() < 0.5:
-                child[param.name] = parent1[param.name]
-            else:
-                child[param.name] = parent2[param.name]
-
-        return child
-
-    def _mutate(self, individual: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        变异操作
-
-        Args:
-            individual: 个体
-
-        Returns:
-            变异后的个体
-        """
-        mutated = individual.copy()
-
-        for param in self.param_space:
-            if random.random() < self.mutation_rate:
-                # 对该参数重新采样
-                mutated[param.name] = param.sample()
-
-        return mutated
-
-    def _create_next_generation(self) -> None:
-        """创建下一代"""
+    def _evolve(self):
+        """进化一代"""
         new_population = []
 
-        # 精英保留
-        elite_count = int(self.population_size * self.elitism_ratio)
-        elites = [ind for ind, _ in self.fitness_scores[:elite_count]]
-        new_population.extend(copy.deepcopy(elites))
+        # 精英保留（保留前20%）
+        elite_size = max(1, self.population_size // 5)
+        sorted_indices = sorted(
+            range(len(self.fitness_scores)),
+            key=lambda i: self.fitness_scores[i],
+            reverse=self.maximize
+        )
+
+        for i in range(elite_size):
+            new_population.append(self.population[sorted_indices[i]].copy())
 
         # 生成新个体
         while len(new_population) < self.population_size:
-            # 选择父代
-            parents = self._select_parents(2)
-            if len(parents) < 2:
-                break
+            # 选择
+            parent1 = self._tournament_select()
+            parent2 = self._tournament_select()
 
-            # 交叉和变异
-            child = self._crossover(parents[0], parents[1])
-            child = self._mutate(child)
+            # 交叉
+            if random.random() < self.crossover_rate:
+                child = self._crossover(parent1, parent2)
+            else:
+                child = parent1.copy()
+
+            # 变异
+            if random.random() < self.mutation_rate:
+                child = self._mutate(child)
 
             new_population.append(child)
 
-        self.population = new_population[:self.population_size]
+        self.population = new_population
 
-    async def optimize(
-        self,
-        strategy_class,
-        symbols: List[str],
-        start_date: datetime,
-        end_date: datetime
-    ) -> OptimizationResult:
-        """
-        执行遗传算法优化
+    def _tournament_select(self) -> Dict[str, Any]:
+        """锦标赛选择"""
+        tournament_size = 3
+        tournament_indices = random.sample(range(len(self.population)), tournament_size)
 
-        Args:
-            strategy_class: 策略类
-            symbols: 交易标的
-            start_date: 开始日期
-            end_date: 结束日期
+        best_idx = tournament_indices[0]
+        for idx in tournament_indices[1:]:
+            if self.fitness_scores[idx] > self.fitness_scores[best_idx]:
+                best_idx = idx
 
-        Returns:
-            OptimizationResult: 优化结果
-        """
-        start_time = datetime.now()
+        return self.population[best_idx].copy()
 
-        # 初始化种群
-        self._initialize_population()
+    def _crossover(self, parent1: dict, parent2: dict) -> dict:
+        """交叉操作"""
+        child = {}
+        for key in parent1.keys():
+            if random.random() < 0.5:
+                child[key] = parent1[key]
+            else:
+                child[key] = parent2[key]
+        return child
 
-        # 初始化结果
-        result = OptimizationResult(
-            best_params={},
-            best_score=float('-inf') if self.config.direction == "maximize" else float('inf'),
-            objective=self.config.objective
-        )
+    def _mutate(self, individual: dict) -> dict:
+        """变异操作"""
+        mutated = individual.copy()
+        param_name = random.choice(list(self.parameter_spaces.keys()))
+        space = self.parameter_spaces[param_name]
+        mutated[param_name] = self._random_param_value(space)
+        return mutated
 
-        # 进化循环
-        for generation in range(self.generations):
-            logger.info(f"遗传算法: 第 {generation + 1}/{self.generations} 代")
+    def _create_results(self):
+        """创建结果列表"""
+        # 去重
+        unique_params = []
+        for individual in self.population:
+            if individual not in unique_params:
+                unique_params.append(individual)
 
-            # 评估种群
-            await self._evaluate_population(strategy_class, symbols, start_date, end_date)
-
-            # 记录最佳个体
-            best_individual, best_score = self.fitness_scores[0]
-            result.add_iteration(
-                iteration=generation + 1,
-                params=best_individual,
-                score=best_score
+        # 评估所有唯一参数
+        self.results = []
+        for i, params in enumerate(unique_params):
+            idx = self.population.index(params)
+            result = OptimizationResult(
+                parameters=params,
+                metrics={self.objective_metric: self.fitness_scores[idx]},
+                rank=0
             )
+            self.results.append(result)
 
-            # 更新全局最优
-            if self._is_better(best_score):
-                self._update_best(best_score, best_individual)
-                result.best_params = best_individual
-                result.best_score = best_score
-                logger.info(f"  找到更好的解，得分 = {best_score:.4f}")
-
-            # 检查早停
-            if self._should_stop_early():
-                logger.info(f"早停触发，已进化 {generation + 1} 代")
-                break
-
-            # 创建下一代
-            if generation < self.generations - 1:
-                self._create_next_generation()
-
-        # 计算耗时
-        duration = (datetime.now() - start_time).total_seconds()
-        result.duration_seconds = duration
-
-        logger.info(
-            f"遗传算法完成: 共 {result.total_iterations} 代, "
-            f"耗时 {duration:.1f}秒, 最佳得分 = {result.best_score:.4f}"
+        # 排序
+        self.results.sort(
+            key=lambda r: r.metrics.get(self.objective_metric, 0),
+            reverse=self.maximize
         )
 
-        return result
+        for i, r in enumerate(self.results):
+            r.rank = i + 1

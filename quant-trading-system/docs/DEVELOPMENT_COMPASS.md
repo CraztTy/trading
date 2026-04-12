@@ -135,27 +135,34 @@
 
 ---
 
-### Phase 3：策略管理（Week 5-6）
+### Phase 3：策略管理（Week 5-6）✅
 **目标**：实现策略的CRUD、参数优化、版本管理
 
-#### 3.1 策略管理后端
-| 文件路径 | 任务 | 优先级 | 预估工时 |
-|---------|------|--------|----------|
-| `src/strategy/manager.py` | 完善策略生命周期管理 | P0 | 4h |
-| `src/strategy/optimizer/` | 策略参数优化（网格搜索/遗传算法） | P1 | 8h |
-| `src/api/v1/endpoints/strategies.py` | 完善策略API | P0 | 3h |
+#### 3.1 策略管理后端 ✅
+| 文件路径 | 任务 | 优先级 | 状态 |
+|---------|------|--------|------|
+| `src/models/strategy.py` | 策略模型增强（代码/参数） | P0 | ✅ |
+| `src/models/strategy_version.py` | 策略版本表 | P0 | ✅ |
+| `src/models/strategy_backtest.py` | 策略回测关联表 | P0 | ✅ |
+| `src/services/strategy_service.py` | 策略服务（CRUD/启停） | P0 | ✅ |
+| `src/api/v1/endpoints/strategies.py` | 策略API | P0 | ✅ |
+| `src/strategy/optimizer/grid_search.py` | 网格搜索优化 | P1 | ✅ |
+| `src/strategy/optimizer/genetic.py` | 遗传算法优化 | P1 | ✅ |
 
-#### 3.2 策略管理前端
-| 文件路径 | 任务 | 优先级 | 预估工时 |
-|---------|------|--------|----------|
-| `web/src/views/StrategyView.vue` | 重构为真实策略管理 | P0 | 6h |
-| `web/src/api/strategy.ts` | 策略API客户端（恢复） | P0 | 2h |
-| `web/src/stores/strategy.ts` | 策略状态管理（恢复） | P0 | 2h |
+#### 3.2 策略管理前端 ✅
+| 文件路径 | 任务 | 优先级 | 状态 |
+|---------|------|--------|------|
+| `web/src/views/StrategyView.vue` | 策略主视图 | P0 | ✅ |
+| `web/src/components/strategy/StrategyList.vue` | 策略列表 | P0 | ✅ |
+| `web/src/components/strategy/StrategyEditor.vue` | 策略编辑器 | P0 | ✅ |
+| `web/src/api/strategy.ts` | 策略API客户端 | P0 | ✅ |
 
 **Phase 3 交付标准**：
-- [ ] 策略创建/编辑/删除
-- [ ] 策略参数优化
-- [ ] 策略与回测结果关联
+- [x] 策略创建/编辑/删除
+- [x] 策略参数优化（网格搜索/遗传算法）
+- [x] 策略与回测结果关联
+- [x] 策略版本管理
+- [x] 策略启停控制
 
 ---
 

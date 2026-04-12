@@ -36,14 +36,11 @@ from src.strategy.indicators import (
 )
 
 from src.strategy.optimizer import (
+    BaseOptimizer,
     ParameterSpace,
-    OptimizationConfig,
     OptimizationResult,
-    ParameterType,
-    Optimizer,
     GridSearchOptimizer,
     GeneticOptimizer,
-    WalkForwardOptimizer,
 )
 
 from src.strategy.selector import (
@@ -84,14 +81,11 @@ __all__ = [
     "OBV",
     "IndicatorEngine",
     # 优化器
+    "BaseOptimizer",
     "ParameterSpace",
-    "OptimizationConfig",
     "OptimizationResult",
-    "ParameterType",
-    "Optimizer",
     "GridSearchOptimizer",
     "GeneticOptimizer",
-    "WalkForwardOptimizer",
     # 选择器
     "StrategySelector",
     "MarketState",

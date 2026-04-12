@@ -20,6 +20,8 @@ from src.models.signal_log import SignalLog
 from src.models.audit_log import AuditLog
 from src.models.data_quality_log import DataQualityLog
 from src.models.backtest_task import BacktestTask
+from src.models.strategy_version import StrategyVersion
+from src.models.strategy_backtest import StrategyBacktest
 from src.common.auth import get_password_hash
 
 

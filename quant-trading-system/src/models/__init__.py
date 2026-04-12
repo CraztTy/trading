@@ -35,6 +35,8 @@ from src.models.signal_log import SignalLog
 from src.models.audit_log import AuditLog
 from src.models.data_quality_log import DataQualityLog
 from src.models.backtest_task import BacktestTask
+from src.models.strategy_version import StrategyVersion
+from src.models.strategy_backtest import StrategyBacktest
 
 __all__ = [
     # 基础
@@ -70,4 +72,7 @@ __all__ = [
     "DataQualityLog",
     # 回测任务
     "BacktestTask",
+    # 策略版本和回测关联
+    "StrategyVersion",
+    "StrategyBacktest",
 ]
