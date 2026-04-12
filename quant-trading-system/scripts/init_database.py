@@ -19,6 +19,7 @@ from src.models.user import User
 from src.models.signal_log import SignalLog
 from src.models.audit_log import AuditLog
 from src.models.data_quality_log import DataQualityLog
+from src.models.backtest_task import BacktestTask
 from src.common.auth import get_password_hash
 
 

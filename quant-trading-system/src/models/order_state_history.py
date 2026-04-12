@@ -73,8 +73,7 @@ class OrderStateHistory(Base):
         if metadata:
             self.metadata_json = json.dumps(metadata, ensure_ascii=False)
 
-    @property
-    def metadata(self) -> Optional[dict]:
+    def get_metadata(self) -> Optional[dict]:
         """获取元数据字典"""
         if self.metadata_json:
             try:
@@ -83,8 +82,7 @@ class OrderStateHistory(Base):
                 return None
         return None
 
-    @metadata.setter
-    def metadata(self, value: Optional[dict]):
+    def set_metadata(self, value: Optional[dict]):
         """设置元数据字典"""
         if value:
             self.metadata_json = json.dumps(value, ensure_ascii=False)
@@ -99,7 +97,7 @@ class OrderStateHistory(Base):
             "from_status": self.from_status,
             "to_status": self.to_status,
             "reason": self.reason,
-            "metadata": self.metadata,
+            "metadata": self.get_metadata(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

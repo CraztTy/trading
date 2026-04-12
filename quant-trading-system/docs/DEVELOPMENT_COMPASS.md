@@ -98,31 +98,40 @@
 
 ---
 
-### Phase 2：回测系统（Week 3-4）
+### Phase 2：回测系统（Week 3-4）✅
 **目标**：实现策略回测功能，支持策略验证
 
-#### 2.1 回测引擎
-| 文件路径 | 任务 | 优先级 | 预估工时 |
-|---------|------|--------|----------|
-| `src/backtest/engine.py` | 回测引擎核心逻辑 | P0 | 8h |
-| `src/backtest/data_loader.py` | 历史数据加载器 | P0 | 4h |
-| `src/backtest/metrics.py` | 回测指标计算（夏普/最大回撤等） | P0 | 4h |
+#### 2.1 回测引擎 ✅
+| 文件路径 | 任务 | 优先级 | 状态 |
+|---------|------|--------|------|
+| `src/backtest/engine.py` | 回测引擎核心逻辑 | P0 | ✅ |
+| `src/backtest/engine.py` | 滑点模型 | P0 | ✅ |
+| `src/backtest/engine.py` | 手续费计算器 | P0 | ✅ |
+| `src/backtest/data_loader.py` | 历史数据加载器 | P0 | ✅ |
+| `src/backtest/metrics.py` | 回测指标计算（夏普/最大回撤等） | P0 | ✅ |
 
-#### 2.2 回测API
-| 文件路径 | 任务 | 优先级 | 预估工时 |
-|---------|------|--------|----------|
-| `src/api/v1/endpoints/backtest.py` | 完善回测API（真实逻辑） | P0 | 3h |
+#### 2.2 回测API ✅
+| 文件路径 | 任务 | 优先级 | 状态 |
+|---------|------|--------|------|
+| `src/api/v1/endpoints/backtest.py` | 完善回测API（真实逻辑） | P0 | ✅ |
+| `src/models/backtest_task.py` | 回测任务表 | P0 | ✅ |
+| `src/services/backtest_service.py` | 回测服务 | P0 | ✅ |
 
-#### 2.3 前端回测视图
-| 文件路径 | 任务 | 优先级 | 预估工时 |
-|---------|------|--------|----------|
-| `web/src/views/BacktestView.vue` | 新建回测视图（新增） | P0 | 6h |
-| `web/src/api/backtest.ts` | 回测API客户端（新增） | P1 | 2h |
+#### 2.3 前端回测视图 ✅
+| 文件路径 | 任务 | 优先级 | 状态 |
+|---------|------|--------|------|
+| `web/src/views/BacktestView.vue` | 回测主视图 | P0 | ✅ |
+| `web/src/components/backtest/BacktestForm.vue` | 回测表单 | P0 | ✅ |
+| `web/src/components/backtest/BacktestResults.vue` | 结果展示 | P0 | ✅ |
+| `web/src/components/backtest/BacktestTaskList.vue` | 任务列表 | P0 | ✅ |
+| `web/src/api/backtest.ts` | 回测API客户端 | P1 | ✅ |
 
 **Phase 2 交付标准**：
-- [ ] 支持策略回测任务创建
-- [ ] 回测结果展示（收益曲线、指标）
-- [ ] 支持多策略对比
+- [x] 支持策略回测任务创建
+- [x] 回测结果展示（收益曲线、指标）
+- [x] 支持多策略对比
+- [x] 滑点和手续费计算
+- [x] 任务状态管理
 
 ---
 

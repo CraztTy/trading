@@ -26,6 +26,145 @@ from src.models.enums import OrderDirection, OrderType
 logger = TradingLogger(__name__)
 
 
+class SlippageModel:
+    """滑点模型"""
+
+    def __init__(self, slippage_pct: float = 0.001):
+        """
+        Args:
+            slippage_pct: 滑点百分比，默认0.1%
+        """
+        self.slippage_pct = slippage_pct
+
+    def apply(self, price: Decimal, direction: OrderDirection) -> Decimal:
+        """
+        应用滑点
+
+        买入: 价格向上滑点 (买得更贵)
+        卖出: 价格向下滑点 (卖得更便宜)
+        """
+        if direction == OrderDirection.BUY:
+            return price * (1 + Decimal(str(self.slippage_pct)))
+        else:
+            return price * (1 - Decimal(str(self.slippage_pct)))
+
+
+class CommissionCalculator:
+    """手续费计算器 (A股规则)"""
+
+    def __init__(
+        self,
+        commission_rate: float = 0.0003,  # 佣金万3
+        min_commission: float = 5.0,       # 最低5元
+        stamp_tax_rate: float = 0.001,     # 印花税千1
+        transfer_fee_rate: float = 0.00002 # 过户费万分0.2
+    ):
+        self.commission_rate = commission_rate
+        self.min_commission = min_commission
+        self.stamp_tax_rate = stamp_tax_rate
+        self.transfer_fee_rate = transfer_fee_rate
+
+    def calculate(
+        self,
+        amount: Decimal,
+        direction: OrderDirection
+    ) -> Dict[str, Decimal]:
+        """
+        计算手续费
+
+        Returns:
+            {
+                "commission": 佣金,
+                "stamp_tax": 印花税,
+                "transfer_fee": 过户费,
+                "total": 总费用
+            }
+        """
+        # 佣金
+        commission = max(
+            amount * Decimal(str(self.commission_rate)),
+            Decimal(str(self.min_commission))
+        )
+
+        # 印花税（仅卖出）
+        stamp_tax = Decimal("0")
+        if direction == OrderDirection.SELL:
+            stamp_tax = amount * Decimal(str(self.stamp_tax_rate))
+
+        # 过户费
+        transfer_fee = amount * Decimal(str(self.transfer_fee_rate))
+
+        return {
+            "commission": commission,
+            "stamp_tax": stamp_tax,
+            "transfer_fee": transfer_fee,
+            "total": commission + stamp_tax + transfer_fee
+        }
+
+
+class ExecutionSimulator:
+    """成交模拟器"""
+
+    def __init__(
+        self,
+        slippage_model: Optional[SlippageModel] = None,
+        commission_calculator: Optional[CommissionCalculator] = None
+    ):
+        self.slippage_model = slippage_model or SlippageModel()
+        self.commission_calculator = commission_calculator or CommissionCalculator()
+
+    def simulate_trade(
+        self,
+        signal: Signal,
+        market_data: Dict[str, Decimal]
+    ) -> Dict[str, Any]:
+        """
+        模拟成交
+
+        简化逻辑:
+        - 市价单按当前价格成交
+        - 应用滑点
+        - 计算手续费
+
+        Returns:
+            {
+                "price": 执行价格,
+                "volume": 成交量,
+                "amount": 成交金额,
+                "fees": 总费用,
+                "commission": 佣金,
+                "stamp_tax": 印花税,
+                "transfer_fee": 过户费
+            }
+        """
+        # 获取当前价格
+        current_price = market_data.get("close", Decimal("0"))
+        if current_price <= 0:
+            raise ValueError(f"无效的价格: {current_price}")
+
+        # 确定方向
+        direction = OrderDirection.BUY if signal.type == SignalType.BUY else OrderDirection.SELL
+
+        # 应用滑点
+        executed_price = self.slippage_model.apply(current_price, direction)
+
+        # 计算成交金额
+        amount = executed_price * signal.volume
+
+        # 计算手续费
+        fees = self.commission_calculator.calculate(amount, direction)
+
+        return {
+            "price": executed_price,
+            "volume": signal.volume,
+            "amount": amount,
+            "fees": fees["total"],
+            "commission": fees["commission"],
+            "stamp_tax": fees["stamp_tax"],
+            "transfer_fee": fees["transfer_fee"]
+        }
+
+
 @dataclass
 class BacktestConfig:
     """回测配置"""
@@ -35,7 +174,10 @@ class BacktestConfig:
     commission_rate: float = 0.0003  # 佣金率
     min_commission: float = 5.0  # 最低佣金
     stamp_tax_rate: float = 0.001  # 印花税率（卖出）
-    slippage: float = 0.0  # 滑点
+    transfer_fee_rate: float = 0.00002  # 过户费万分0.2
+    slippage_pct: float = 0.001  # 滑点百分比，默认0.1%
+    enable_partial_fill: bool = False  # 是否支持部分成交
+    partial_fill_prob: float = 0.0  # 部分成交概率
 
 
 @dataclass
@@ -70,7 +212,9 @@ class BacktestContext(StrategyContext):
         initial_capital: Decimal = Decimal("1000000"),
         commission_rate: float = 0.0003,
         min_commission: float = 5.0,
-        stamp_tax_rate: float = 0.001
+        stamp_tax_rate: float = 0.001,
+        transfer_fee_rate: float = 0.00002,
+        slippage_pct: float = 0.001
     ):
         super().__init__(strategy_id, initial_capital)
 
@@ -78,6 +222,16 @@ class BacktestContext(StrategyContext):
         self.commission_rate = commission_rate
         self.min_commission = min_commission
         self.stamp_tax_rate = stamp_tax_rate
+        self.transfer_fee_rate = transfer_fee_rate
+
+        # 初始化滑点模型和手续费计算器
+        self.slippage_model = SlippageModel(slippage_pct)
+        self.commission_calculator = CommissionCalculator(
+            commission_rate=commission_rate,
+            min_commission=min_commission,
+            stamp_tax_rate=stamp_tax_rate,
+            transfer_fee_rate=transfer_fee_rate
+        )
 
         # 持仓成本记录: symbol -> avg_price
         self._position_costs: Dict[str, Decimal] = {}
@@ -108,14 +262,20 @@ class BacktestContext(StrategyContext):
                 logger.warning(f"无法获取 {symbol} 价格，无法买入")
                 return None
 
-        # 计算金额
-        amount = price * volume
+        # 应用滑点（买入价格向上滑点）
+        executed_price = self.slippage_model.apply(price, OrderDirection.BUY)
 
-        # 计算佣金
-        commission = max(amount * Decimal(str(self.commission_rate)), Decimal(str(self.min_commission)))
+        # 计算成交金额
+        amount = executed_price * volume
+
+        # 计算手续费（买入时无印花税）
+        fees = self.commission_calculator.calculate(amount, OrderDirection.BUY)
+        commission = fees["commission"]
+        transfer_fee = fees["transfer_fee"]
+        total_fees = fees["total"]
 
         # 检查资金
-        total_cost = amount + commission
+        total_cost = amount + total_fees
         if total_cost > self.current_capital:
             logger.warning(f"资金不足: 需要 {total_cost}, 可用 {self.current_capital}")
             return None
@@ -158,14 +318,16 @@ class BacktestContext(StrategyContext):
             symbol=symbol,
             side="BUY",
             qty=volume,
-            price=price,
+            price=executed_price,
             amount=amount,
-            commission=commission
+            commission=commission,
+            stamp_tax=Decimal("0"),
+            transfer_fee=transfer_fee
         )
         self.trades.append(trade)
 
         order_id = f"BACKTEST_BUY_{len(self.trades)}"
-        logger.info(f"[回测] 买入 {symbol} {volume}股 @ {price}, 佣金: {commission}")
+        logger.info(f"[回测] 买入 {symbol} {volume}股 @ {executed_price}, 佣金: {commission}, 过户费: {transfer_fee}")
 
         return order_id
 
@@ -190,20 +352,25 @@ class BacktestContext(StrategyContext):
                 logger.warning(f"无法获取 {symbol} 价格，无法卖出")
                 return None
 
-        # 计算金额
-        amount = price * volume
+        # 应用滑点（卖出价格向下滑点）
+        executed_price = self.slippage_model.apply(price, OrderDirection.SELL)
 
-        # 计算佣金和印花税
-        commission = max(amount * Decimal(str(self.commission_rate)), Decimal(str(self.min_commission)))
-        stamp_tax = amount * Decimal(str(self.stamp_tax_rate))
-        total_cost = commission + stamp_tax
+        # 计算成交金额
+        amount = executed_price * volume
+
+        # 计算手续费（卖出时有印花税）
+        fees = self.commission_calculator.calculate(amount, OrderDirection.SELL)
+        commission = fees["commission"]
+        stamp_tax = fees["stamp_tax"]
+        transfer_fee = fees["transfer_fee"]
+        total_fees = fees["total"]
 
         # 计算盈亏
-        cost_price = self._position_costs.get(symbol, price)
-        pnl = (price - cost_price) * volume
+        cost_price = self._position_costs.get(symbol, executed_price)
+        pnl = (executed_price - cost_price) * volume
 
         # 执行卖出
-        self.current_capital += amount - total_cost
+        self.current_capital += amount - total_fees
 
         # 更新持仓
         new_qty = position.quantity - volume
@@ -222,15 +389,17 @@ class BacktestContext(StrategyContext):
             symbol=symbol,
             side="SELL",
             qty=volume,
-            price=price,
+            price=executed_price,
             amount=amount,
-            commission=commission + stamp_tax,
+            commission=commission,
+            stamp_tax=stamp_tax,
+            transfer_fee=transfer_fee,
             pnl=pnl
         )
         self.trades.append(trade)
 
         order_id = f"BACKTEST_SELL_{len(self.trades)}"
-        logger.info(f"[回测] 卖出 {symbol} {volume}股 @ {price}, 盈亏: {pnl}, 税费: {total_cost}")
+        logger.info(f"[回测] 卖出 {symbol} {volume}股 @ {executed_price}, 盈亏: {pnl}, 佣金: {commission}, 印花税: {stamp_tax}, 过户费: {transfer_fee}")
 
         return order_id
 
@@ -310,7 +479,9 @@ class BacktestEngine:
             initial_capital=config.initial_capital,
             commission_rate=config.commission_rate,
             min_commission=config.min_commission,
-            stamp_tax_rate=config.stamp_tax_rate
+            stamp_tax_rate=config.stamp_tax_rate,
+            transfer_fee_rate=config.transfer_fee_rate,
+            slippage_pct=config.slippage_pct
         )
 
         # 初始化策略

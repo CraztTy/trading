@@ -34,6 +34,7 @@ from src.models.order_state_history import OrderStateHistory
 from src.models.signal_log import SignalLog
 from src.models.audit_log import AuditLog
 from src.models.data_quality_log import DataQualityLog
+from src.models.backtest_task import BacktestTask
 
 __all__ = [
     # 基础
@@ -67,4 +68,6 @@ __all__ = [
     "SignalLog",
     "AuditLog",
     "DataQualityLog",
+    # 回测任务
+    "BacktestTask",
 ]

@@ -31,6 +31,8 @@ class TradeRecord:
     price: Decimal
     amount: Decimal
     commission: Decimal = Decimal("0")
+    stamp_tax: Decimal = Decimal("0")  # 印花税
+    transfer_fee: Decimal = Decimal("0")  # 过户费
     pnl: Optional[Decimal] = None  # 平仓时记录盈亏
 
 
@@ -184,6 +186,7 @@ class MetricsCalculator:
 
         # 持仓统计
         avg_position_count = self._calc_avg_position_count(daily_portfolios)
+        avg_position_duration = self._calc_avg_position_duration(trades)
 
         return BacktestMetrics(
             start_date=start_date,
@@ -201,7 +204,7 @@ class MetricsCalculator:
             sortino_ratio=sortino,
             calmar_ratio=calmar,
             avg_position_count=avg_position_count,
-            avg_position_duration=0,  # TODO: 计算平均持仓天数
+            avg_position_duration=avg_position_duration,
             **trade_stats
         )
 
@@ -358,3 +361,30 @@ class MetricsCalculator:
 
         counts = [len(p.positions) for p in portfolios]
         return sum(counts) / len(counts)
+
+    def _calc_avg_position_duration(
+        self,
+        trades: List[TradeRecord]
+    ) -> float:
+        """计算平均持仓天数"""
+        if not trades or len(trades) < 2:
+            return 0.0
+
+        durations = []
+        open_trades: Dict[str, datetime] = {}  # symbol -> open_time
+
+        for trade in trades:
+            if trade.side == "BUY":
+                # 记录买入时间（累加同一标的多次买入）
+                if trade.symbol in open_trades:
+                    # 已有持仓，保持最早的买入时间
+                    pass
+                else:
+                    open_trades[trade.symbol] = trade.timestamp
+            elif trade.side == "SELL" and trade.symbol in open_trades:
+                open_time = open_trades.pop(trade.symbol)
+                duration = (trade.timestamp - open_time).days
+                if duration >= 0:  # 确保非负
+                    durations.append(duration)
+
+        return sum(durations) / len(durations) if durations else 0.0

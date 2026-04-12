@@ -58,6 +58,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '风控', requiresAuth: true }
   },
   {
+    path: '/backtest',
+    name: 'Backtest',
+    component: () => import('@/views/BacktestView.vue'),
+    meta: { title: '策略回测', requiresAuth: true }
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('@/views/SettingsView.vue'),
